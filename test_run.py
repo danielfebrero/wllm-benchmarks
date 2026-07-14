@@ -788,6 +788,9 @@ class WllmBriefTests(unittest.TestCase):
             self.assertEqual(bounded.call_args.kwargs["cwd"], workspace)
             self.assertGreater(bounded.call_args.kwargs["timeout"], 0)
             self.assertLessEqual(bounded.call_args.kwargs["timeout"], 7)
+            self.assertEqual(
+                bounded.call_args.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0"
+            )
 
     def test_brief_is_exact_bounded_and_restores_workspace_state(self) -> None:
         fake_source = r'''#!/usr/bin/env python3
@@ -813,6 +816,8 @@ for flag in ("--target", "--root"):
         raise SystemExit(f"unexpected {flag}")
 Path(".wllm").mkdir(exist_ok=True)
 Path(".wllm/generated-by-brief").write_text("remove me", encoding="utf-8")
+Path(".git").mkdir(exist_ok=True)
+Path(".git/index").write_text("refreshed by git", encoding="utf-8")
 print("wllm context")
 print("schema: 1.0")
 print("est: 42")
@@ -833,6 +838,10 @@ print('{"ref":"u1","path":"src/example.py","content":"target evidence"}')
             )
             (workspace / ".wllm" / "cache-v2" / "existing").write_text(
                 "preserve cache", encoding="utf-8"
+            )
+            (workspace / ".git").mkdir()
+            (workspace / ".git" / "index").write_text(
+                "original index", encoding="utf-8"
             )
             artifacts.mkdir()
             brief, estimate, duration = run.generate_wllm_brief(
@@ -862,6 +871,10 @@ print('{"ref":"u1","path":"src/example.py","content":"target evidence"}')
                 "preserve cache",
             )
             self.assertFalse((workspace / ".wllm" / "generated-by-brief").exists())
+            self.assertEqual(
+                (workspace / ".git" / "index").read_text(encoding="utf-8"),
+                "original index",
+            )
             clean_workspace = root / "clean-workspace"
             clean_workspace.mkdir()
             run.generate_wllm_brief(
@@ -874,6 +887,7 @@ print('{"ref":"u1","path":"src/example.py","content":"target evidence"}')
                 timeout=5,
             )
             self.assertFalse((clean_workspace / ".wllm").exists())
+            self.assertFalse((clean_workspace / ".git").exists())
 
     def test_post_brief_workspace_mutation_is_infrastructure_invalid(self) -> None:
         fake_source = r'''#!/usr/bin/env python3
