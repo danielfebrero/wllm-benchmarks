@@ -873,6 +873,51 @@ def build_prompt(
     return prompt + common + delegation + capability
 
 
+def snapshot_workspace_metadata(
+    workspace: Path, backup_root: Path, names: Iterable[str]
+) -> list[tuple[Path, Path, str]]:
+    """Copy mutable tool metadata outside the fixture for exact restoration."""
+    snapshots: list[tuple[Path, Path, str]] = []
+    for name in names:
+        source = workspace / name
+        if not os.path.lexists(source):
+            snapshots.append((source, backup_root / name, "missing"))
+            continue
+        backup = backup_root / name
+        if source.is_symlink():
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            backup.symlink_to(os.readlink(source))
+            kind = "symlink"
+        elif source.is_dir():
+            shutil.copytree(source, backup, symlinks=True)
+            kind = "directory"
+        else:
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, backup, follow_symlinks=False)
+            kind = "file"
+        snapshots.append((source, backup, kind))
+    return snapshots
+
+
+def restore_workspace_metadata(
+    snapshots: Iterable[tuple[Path, Path, str]]
+) -> None:
+    for destination, backup, kind in snapshots:
+        if destination.is_symlink() or destination.is_file():
+            destination.unlink(missing_ok=True)
+        elif destination.exists():
+            shutil.rmtree(destination)
+        if kind == "missing":
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "directory":
+            shutil.copytree(backup, destination, symlinks=True)
+        elif kind == "symlink":
+            destination.symlink_to(os.readlink(backup))
+        else:
+            shutil.copy2(backup, destination, follow_symlinks=False)
+
+
 def generate_wllm_brief(
     *,
     wllm: Path,
@@ -901,21 +946,25 @@ def generate_wllm_brief(
         json.dumps(command, indent=2) + "\n", encoding="utf-8"
     )
     started = time.monotonic()
-    state_dir = workspace / ".wllm"
-    state_existed = state_dir.exists()
     backup_root = Path(tempfile.mkdtemp(prefix=f"{stem}-state-"))
-    backup_state = backup_root / ".wllm"
+    snapshots: list[tuple[Path, Path, str]] = []
     try:
-        if state_existed:
-            shutil.copytree(state_dir, backup_state, symlinks=True)
+        # wllm's scan cache lives under .wllm. Git read operations may also
+        # refresh .git/index on some Git/macOS versions, so protect both areas.
+        snapshots = snapshot_workspace_metadata(
+            workspace, backup_root, (".wllm", ".git")
+        )
         process_timeout = min(120.0, timeout - (time.monotonic() - started))
         if process_timeout <= 0:
             raise CodexRunError("no end-to-end time remained for wllm briefing")
         try:
+            brief_environment = os.environ.copy()
+            brief_environment["GIT_OPTIONAL_LOCKS"] = "0"
             result = run_bounded_process_tree(
                 command,
                 cwd=workspace,
                 timeout=process_timeout,
+                env=brief_environment,
             )
         except subprocess.TimeoutExpired as error:
             stdout = decode_timeout_stream(error.stdout)
@@ -966,12 +1015,12 @@ def generate_wllm_brief(
                 "--brief-budget or inspect the task query"
             )
     finally:
-        # Restore the exact pre-treatment state. This removes generated cache
-        # without deleting task-authored `.wllm` content.
-        shutil.rmtree(state_dir, ignore_errors=True)
-        if state_existed and backup_state.exists():
-            shutil.copytree(backup_state, state_dir, symlinks=True)
-        shutil.rmtree(backup_root, ignore_errors=True)
+        # Restore the exact pre-treatment state without deleting task-authored
+        # `.wllm` content or retaining Git's optional index refresh.
+        try:
+            restore_workspace_metadata(snapshots)
+        finally:
+            shutil.rmtree(backup_root, ignore_errors=True)
     duration = time.monotonic() - started
     return brief, estimate, duration
 

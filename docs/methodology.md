@@ -28,8 +28,9 @@ digest and refuses agent execution unless all copies match. The public task and
 common efficiency instruction are identical. The baseline never receives a
 briefing or wllm directive. `brief-only` receives the briefing but is explicitly
 denied runtime wllm. The full arm receives the briefing and targeted-use
-directive. Generated `.wllm` state is restored before the agent starts, then
-the complete workspace is re-hashed;
+directive. Generated `.wllm` state and any optional Git index refresh are
+transactionally restored before the agent starts, then the complete workspace
+is re-hashed;
 agent execution is infrastructure-invalid if it no longer matches the fixture.
 
 The harness disables user-configured integrations (`--ignore-user-config` and
