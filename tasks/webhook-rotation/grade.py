@@ -154,7 +154,7 @@ def main() -> int:
             "failures": [f"candidate load failed: {type(error).__name__}: {error}"],
         }
         print(json.dumps(result, sort_keys=True))
-        return 1
+        return 0
 
     failures: list[str] = []
     passed = 0
@@ -173,7 +173,7 @@ def main() -> int:
         "failures": failures,
     }
     print(json.dumps(result, sort_keys=True))
-    return 0 if passed == len(checks) else 1
+    return 0
 
 
 if __name__ == "__main__":

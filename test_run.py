@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -45,6 +48,201 @@ class JsonlParserTests(unittest.TestCase):
         self.assertEqual(message, "done")
         self.assertEqual(errors, [])
         self.assertTrue(completed)
+
+
+class ManifestAndGradeValidationTests(unittest.TestCase):
+    def test_task_id_cannot_escape_tasks_root(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "direct child"):
+            run.load_task("../outside")
+
+    def test_task_commands_must_be_non_empty_string_arrays(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tasks = Path(temporary) / "tasks"
+            task = tasks / "bad"
+            task.mkdir(parents=True)
+            (task / "task.json").write_text(
+                json.dumps(
+                    {
+                        "id": "bad",
+                        "title": "bad task",
+                        "prompt": "repair",
+                        "prepare": "python prepare.py",
+                        "grade": ["python3", "grade.py"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(run, "TASKS_ROOT", tasks):
+                with self.assertRaisesRegex(SystemExit, "array of strings"):
+                    run.load_task("bad")
+
+    def test_grader_contract_rejects_exit_nan_range_and_incoherence(self) -> None:
+        valid = {"exit_code": 0, "passed": 3, "total": 4, "score": 0.75}
+        self.assertIsNone(run.grade_validation_error(valid))
+        cases = (
+            ({**valid, "exit_code": 1}, "exited with code"),
+            ({**valid, "score": float("nan")}, "finite"),
+            ({**valid, "score": 1.5}, "within"),
+            ({**valid, "score": 0.5}, "inconsistent"),
+            ({**valid, "passed": 5}, "cannot exceed"),
+        )
+        for grade, message in cases:
+            with self.subTest(message=message):
+                self.assertIn(message, run.grade_validation_error(grade) or "")
+
+    def test_report_schema_uses_emitted_reasoning_and_outcome_fields(self) -> None:
+        schema = json.loads(
+            (run.BENCHMARK_ROOT / "schemas" / "report.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn("reasoning", schema["required"])
+        self.assertNotIn("effort", schema["properties"])
+        statuses = schema["properties"]["records"]["items"]["properties"][
+            "status"
+        ]["enum"]
+        self.assertIn("outcome_failure", statuses)
+
+    def test_codex_preflight_timeout_is_bounded(self) -> None:
+        with mock.patch.object(
+            run.subprocess,
+            "run",
+            side_effect=run.subprocess.TimeoutExpired(["codex"], 30),
+        ):
+            with self.assertRaisesRegex(SystemExit, "timed out"):
+                run.check_codex_auth("codex")
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX process-group behavior")
+class ProcessTreeTests(unittest.TestCase):
+    def test_bounded_process_starts_a_new_session(self) -> None:
+        process = mock.Mock(pid=321, returncode=0)
+        process.communicate.return_value = ("stdout", "stderr")
+        with mock.patch.object(
+            run.subprocess, "Popen", return_value=process
+        ) as popen:
+            result = run.run_bounded_process_tree(
+                ["agent", "--run"], cwd=Path("/tmp"), timeout=12.0
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "stdout")
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertNotIn("creationflags", popen.call_args.kwargs)
+        process.communicate.assert_called_once_with(timeout=12.0)
+
+    def test_timeout_kills_process_group_and_preserves_streams(self) -> None:
+        process = mock.Mock(pid=654, returncode=-run.signal.SIGKILL)
+        first_timeout = run.subprocess.TimeoutExpired(
+            ["agent"], 3.0, output="partial", stderr="partial-error"
+        )
+        process.communicate.side_effect = [
+            first_timeout,
+            ("complete stdout", "complete stderr"),
+        ]
+        with (
+            mock.patch.object(run.subprocess, "Popen", return_value=process),
+            mock.patch.object(run.os, "killpg") as killpg,
+            self.assertRaises(run.subprocess.TimeoutExpired) as raised,
+        ):
+            run.run_bounded_process_tree(
+                ["agent"], cwd=Path("/tmp"), timeout=3.0
+            )
+        killpg.assert_called_once_with(654, run.signal.SIGKILL)
+        process.kill.assert_not_called()
+        self.assertEqual(raised.exception.output, "complete stdout")
+        self.assertEqual(raised.exception.stderr, "complete stderr")
+        self.assertEqual(
+            process.communicate.call_args_list,
+            [mock.call(timeout=3.0), mock.call(timeout=10)],
+        )
+
+    def test_process_group_failure_falls_back_to_direct_kill(self) -> None:
+        process = mock.Mock(pid=987)
+        with mock.patch.object(
+            run.os, "killpg", side_effect=PermissionError("denied")
+        ):
+            run.terminate_process_tree(process)
+        process.kill.assert_called_once_with()
+
+    def test_repeated_cleanup_timeout_never_communicates_unbounded(self) -> None:
+        process = mock.Mock(pid=777)
+        process.stdout = mock.Mock()
+        process.stderr = mock.Mock()
+        first_timeout = run.subprocess.TimeoutExpired(
+            ["agent"], 3.0, output="first stdout", stderr="first stderr"
+        )
+        cleanup_timeout = run.subprocess.TimeoutExpired(
+            ["agent"], 10.0, output="latest stdout", stderr="latest stderr"
+        )
+        process.communicate.side_effect = [first_timeout, cleanup_timeout]
+        process.wait.side_effect = run.subprocess.TimeoutExpired(
+            ["agent"], run.PROCESS_TREE_FINAL_WAIT_SECONDS
+        )
+        with (
+            mock.patch.object(run.subprocess, "Popen", return_value=process),
+            mock.patch.object(run, "terminate_process_tree") as terminate,
+            self.assertRaises(run.subprocess.TimeoutExpired) as raised,
+        ):
+            run.run_bounded_process_tree(
+                ["agent"], cwd=Path("/tmp"), timeout=3.0
+            )
+        self.assertEqual(
+            process.communicate.call_args_list,
+            [
+                mock.call(timeout=3.0),
+                mock.call(timeout=run.PROCESS_TREE_CLEANUP_TIMEOUT_SECONDS),
+            ],
+        )
+        self.assertEqual(terminate.call_count, 2)
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+        process.wait.assert_called_once_with(
+            timeout=run.PROCESS_TREE_FINAL_WAIT_SECONDS
+        )
+        self.assertEqual(raised.exception.output, "latest stdout")
+        self.assertEqual(raised.exception.stderr, "latest stderr")
+
+    def test_detached_descendant_holding_pipe_cannot_make_timeout_unbounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pid_file = root / "detached.pid"
+            parent = (
+                "import pathlib, subprocess, sys, time; "
+                "child = subprocess.Popen("
+                "[sys.executable, '-c', 'import time; time.sleep(30)'], "
+                "start_new_session=True); "
+                f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid)); "
+                "print('detached-ready', flush=True); "
+                "time.sleep(30)"
+            )
+            detached_pid: int | None = None
+            started = time.monotonic()
+            try:
+                with (
+                    mock.patch.object(
+                        run, "PROCESS_TREE_CLEANUP_TIMEOUT_SECONDS", 0.2
+                    ),
+                    mock.patch.object(run, "PROCESS_TREE_FINAL_WAIT_SECONDS", 0.2),
+                    self.assertRaises(run.subprocess.TimeoutExpired) as raised,
+                ):
+                    run.run_bounded_process_tree(
+                        [sys.executable, "-c", parent], cwd=root, timeout=0.25
+                    )
+                self.assertLess(time.monotonic() - started, 2.0)
+                self.assertIn(
+                    "detached-ready",
+                    run.decode_timeout_stream(raised.exception.output),
+                )
+                self.assertTrue(pid_file.is_file())
+                detached_pid = int(pid_file.read_text(encoding="utf-8"))
+            finally:
+                if detached_pid is None and pid_file.is_file():
+                    detached_pid = int(pid_file.read_text(encoding="utf-8"))
+                if detached_pid is not None:
+                    try:
+                        os.kill(detached_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
 
 class WllmResolutionTests(unittest.TestCase):
@@ -185,7 +383,7 @@ class WllmResolutionTests(unittest.TestCase):
             )
 
             def fake_cargo(
-                command: list[str], *, cwd: Path, check: bool
+                command: list[str], *, cwd: Path, check: bool, timeout: int
             ) -> object:
                 self.assertEqual(
                     command,
@@ -202,6 +400,7 @@ class WllmResolutionTests(unittest.TestCase):
                 )
                 self.assertEqual(cwd, superproject)
                 self.assertTrue(check)
+                self.assertEqual(timeout, run.BUILD_TIMEOUT_SECONDS)
                 self.make_executable(project_binary)
                 return object()
 
@@ -330,6 +529,7 @@ class WllmResolutionTests(unittest.TestCase):
                 stderr=run.subprocess.PIPE,
                 text=True,
                 check=False,
+                timeout=run.PREFLIGHT_TIMEOUT_SECONDS,
             )
 
     def test_standalone_below_cargo_project_is_not_a_superproject(self) -> None:
@@ -366,6 +566,66 @@ class WllmResolutionTests(unittest.TestCase):
 
 
 class FixtureTests(unittest.TestCase):
+    def test_repetition_prepares_once_and_verifies_full_clones(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suite = root / "suite"
+            artifacts = root / "artifacts"
+            suite.mkdir()
+            artifacts.mkdir()
+
+            def fake_prepare(
+                task_dir: Path, manifest: dict[str, object], workspace: Path
+            ) -> None:
+                del task_dir, manifest
+                (workspace / ".git").mkdir()
+                (workspace / ".git" / "config").write_bytes(b"git metadata\n")
+                (workspace / "src").mkdir()
+                candidate = workspace / "src" / "tool.py"
+                candidate.write_bytes(b"print('fixture')\n")
+                candidate.chmod(0o755)
+                (workspace / "tool-link").symlink_to("src/tool.py")
+
+            with mock.patch.object(
+                run, "prepare_workspace", side_effect=fake_prepare
+            ) as prepare:
+                verification = run.prepare_repetition_workspaces(
+                    run_number=1,
+                    arms=["baseline", "wllm"],
+                    task_dir=root,
+                    manifest={},
+                    suite_dir=suite,
+                    artifacts_dir=artifacts,
+                )
+
+            prepare.assert_called_once()
+            self.assertTrue(verification["valid"])
+            source_digest = verification["source"]["digest"]
+            self.assertEqual(
+                verification["workspaces"]["baseline"]["digest"], source_digest
+            )
+            self.assertEqual(
+                verification["workspaces"]["wllm"]["digest"], source_digest
+            )
+            self.assertTrue((suite / "run-01-baseline/.git/config").is_file())
+            self.assertTrue((suite / "run-01-wllm/tool-link").is_symlink())
+            changed = suite / "run-01-baseline/src/tool.py"
+            changed.chmod(0o644)
+            self.assertNotEqual(run.workspace_digest(changed.parents[1])["digest"], source_digest)
+
+    def test_retained_workspaces_do_not_follow_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suite = root / "suite"
+            suite.mkdir()
+            secret = root / "secret.txt"
+            secret.write_text("do not copy", encoding="utf-8")
+            (suite / "external-link").symlink_to(secret)
+            destination = root / "kept"
+            run.retain_workspaces(suite, destination)
+            self.assertTrue((destination / "external-link").is_symlink())
+            self.assertEqual((destination / "external-link").readlink(), secret)
+
     def test_fixture_is_deterministic_and_initial_bug_is_detected(self) -> None:
         task_dir, manifest = run.load_task("webhook-rotation")
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
@@ -476,6 +736,44 @@ def build_release_evidence(
 
 
 class WllmBriefTests(unittest.TestCase):
+    def test_brief_uses_bounded_process_tree(self) -> None:
+        brief_output = "\n".join(
+            (
+                "wllm context",
+                "schema: 1.0",
+                "est: 42",
+                "coverage: considered=1 selected=1 omitted=0",
+                "[items]",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            artifacts = root / "artifacts"
+            workspace.mkdir()
+            artifacts.mkdir()
+            completed = run.subprocess.CompletedProcess(
+                ["wllm"], 0, brief_output, ""
+            )
+            with mock.patch.object(
+                run, "run_bounded_process_tree", return_value=completed
+            ) as bounded:
+                brief, estimate, _ = run.generate_wllm_brief(
+                    wllm=root / "wllm",
+                    workspace=workspace,
+                    query="find the target",
+                    budget=256,
+                    artifacts_dir=artifacts,
+                    stem="brief",
+                    timeout=7,
+                )
+            self.assertEqual(brief, brief_output)
+            self.assertEqual(estimate, 42)
+            self.assertEqual(bounded.call_count, 1)
+            self.assertEqual(bounded.call_args.kwargs["cwd"], workspace)
+            self.assertGreater(bounded.call_args.kwargs["timeout"], 0)
+            self.assertLessEqual(bounded.call_args.kwargs["timeout"], 7)
+
     def test_brief_is_exact_bounded_and_restores_workspace_state(self) -> None:
         fake_source = r'''#!/usr/bin/env python3
 import sys
@@ -561,6 +859,92 @@ print('{"ref":"u1","path":"src/example.py","content":"target evidence"}')
                 timeout=5,
             )
             self.assertFalse((clean_workspace / ".wllm").exists())
+
+    def test_post_brief_workspace_mutation_is_infrastructure_invalid(self) -> None:
+        fake_source = r'''#!/usr/bin/env python3
+from pathlib import Path
+Path("unexpected.txt").write_text("mutation", encoding="utf-8")
+print("wllm context")
+print("schema: 1.0")
+print("est: 12")
+print("coverage: considered=1 selected=1 omitted=0")
+print("[items]")
+print('{"ref":"u1","path":"src/webhook_auth.py","content":"evidence"}')
+'''
+        task_dir, manifest = run.load_task("webhook-rotation")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suite = root / "suite"
+            workspace = suite / "run-01-wllm"
+            artifacts = root / "artifacts"
+            workspace.mkdir(parents=True)
+            artifacts.mkdir()
+            run.prepare_workspace(task_dir, manifest, workspace)
+            digest = run.workspace_digest(workspace)["digest"]
+            fake = root / "wllm"
+            fake.write_text(fake_source, encoding="utf-8")
+            fake.chmod(0o755)
+            record = run.execute_arm(
+                run_number=1,
+                arm="wllm",
+                agent="codex",
+                executable="codex-must-not-run",
+                model="test-model",
+                effort="medium",
+                topology="single",
+                timeout=5,
+                task_dir=task_dir,
+                manifest=manifest,
+                suite_dir=suite,
+                artifacts_dir=artifacts,
+                wllm=fake,
+                brief_budget=256,
+                agent_info={"optional_flags": {}},
+                fixture_digest=digest,
+                fixture_artifact="fixture.json",
+            )
+            self.assertFalse(record["valid"])
+            self.assertEqual(record["failure"]["category"], "fixture_mutation")
+
+    def test_brief_timeout_is_a_censored_itt_outcome(self) -> None:
+        task_dir, manifest = run.load_task("webhook-rotation")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suite = root / "suite"
+            workspace = suite / "run-01-wllm"
+            artifacts = root / "artifacts"
+            workspace.mkdir(parents=True)
+            artifacts.mkdir()
+            run.prepare_workspace(task_dir, manifest, workspace)
+            digest = run.workspace_digest(workspace)["digest"]
+            with mock.patch.object(
+                run,
+                "generate_wllm_brief",
+                side_effect=run.AgentRunError("wllm briefing timed out"),
+            ):
+                record = run.execute_arm(
+                    run_number=1,
+                    arm="wllm",
+                    agent="codex",
+                    executable="codex-must-not-run",
+                    model="test-model",
+                    effort="medium",
+                    topology="single",
+                    timeout=7,
+                    task_dir=task_dir,
+                    manifest=manifest,
+                    suite_dir=suite,
+                    artifacts_dir=artifacts,
+                    wllm=root / "wllm",
+                    brief_budget=256,
+                    agent_info={"optional_flags": {}},
+                    fixture_digest=digest,
+                    fixture_artifact="fixture.json",
+                )
+            self.assertTrue(record["valid"])
+            self.assertEqual(record["status"], "outcome_failure")
+            self.assertEqual(record["duration_seconds"], 7.0)
+            self.assertEqual(record["failure"]["category"], "wllm_brief_timeout")
 
 
 class RunnerIntegrationTests(unittest.TestCase):
@@ -652,6 +1036,12 @@ print('{"ref":"u1","path":"src/webhook_auth.py","content":"target evidence"}')
             self.assertEqual(exit_code, 0)
             report_path = next(results.iterdir()) / "report.json"
             report = json.loads(report_path.read_text(encoding="utf-8"))
+            schema = json.loads(
+                (run.BENCHMARK_ROOT / "schemas" / "report.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertTrue(set(schema["required"]).issubset(report))
             self.assertEqual(len(report["records"]), 2)
             self.assertEqual(report["records"][0]["grade"]["score"], 1)
             self.assertEqual(report["records"][0]["usage"]["total_tokens"], 130)
@@ -669,7 +1059,7 @@ print('{"ref":"u1","path":"src/webhook_auth.py","content":"target evidence"}')
                 1.0,
             )
 
-    def test_invalid_codex_turn_aborts_instead_of_scoring_fixture(self) -> None:
+    def test_agent_exit_is_itt_outcome_and_later_arms_continue(self) -> None:
         fake_source = r"""#!/usr/bin/env python3
 import json
 import sys
@@ -682,27 +1072,126 @@ if sys.argv[1:] == ["--version"]:
 if sys.argv[1:3] == ["exec", "--help"]:
     print("--json --sandbox --cd --model --config")
     raise SystemExit(0)
-print(json.dumps({"type": "error", "message": "model not available"}))
-raise SystemExit(1)
+prompt = sys.argv[-1]
+if "<<<BEGIN_WLLM_BRIEF_" not in prompt:
+    print(json.dumps({"type": "error", "message": "model not available"}))
+    raise SystemExit(1)
+print(json.dumps({"type": "item.completed", "item": {"id": "msg", "type": "agent_message", "text": "done"}}))
+print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 20, "output_tokens": 5}}))
+"""
+        fake_wllm_source = r'''#!/usr/bin/env python3
+import sys
+if sys.argv[1:] == ["--version"]:
+    print("wllm invalid-continuation-test")
+    raise SystemExit(0)
+print("wllm context")
+print("schema: 1.0")
+print("est: 12")
+print("coverage: considered=1 selected=1 omitted=0")
+print("[items]")
+print('{"ref":"u1","path":"src/webhook_auth.py","content":"evidence"}')
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "codex"
+            fake.write_text(fake_source, encoding="utf-8")
+            fake.chmod(0o755)
+            fake_wllm = root / "wllm"
+            fake_wllm.write_text(fake_wllm_source, encoding="utf-8")
+            fake_wllm.chmod(0o755)
+            results = root / "results"
+            exit_code = run.main(
+                [
+                    "--task",
+                    "webhook-rotation",
+                    "--runs",
+                    "2",
+                    "--codex-bin",
+                    str(fake),
+                    "--wllm-bin",
+                    str(fake_wllm),
+                    "--output-dir",
+                    str(results),
+                ]
+            )
+            self.assertEqual(exit_code, 0)
+            artifacts = next(results.iterdir())
+            report = json.loads(
+                (artifacts / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(report["records"]), 4)
+            baseline = [
+                record for record in report["records"] if record["arm"] == "baseline"
+            ]
+            treatment = [
+                record for record in report["records"] if record["arm"] == "wllm"
+            ]
+            self.assertTrue(all(record["valid"] for record in baseline))
+            self.assertTrue(
+                all(record["status"] == "outcome_failure" for record in baseline)
+            )
+            self.assertTrue(all(record["valid"] for record in treatment))
+            self.assertTrue(
+                all(value is None for value in baseline[0]["usage"].values())
+            )
+            self.assertEqual(baseline[0]["grade"]["score"], 0)
+            self.assertEqual(report["aggregate"]["failure_taxonomy"], {"agent_exit": 2})
+            paired = report["aggregate"]["paired"]
+            self.assertEqual(paired["complete_pairs"], 2)
+            self.assertEqual(paired["valid_pairs"], 2)
+            self.assertIsNotNone(paired["geometric_mean_duration_ratio"])
+            self.assertIsNone(paired["geometric_mean_input_token_ratio"])
+            self.assertTrue((artifacts / "artifact-index.json").is_file())
+            self.assertTrue((artifacts / "run-01-baseline.failure.json").is_file())
+
+    def test_agent_timeout_is_a_censored_itt_outcome(self) -> None:
+        fake_source = r"""#!/usr/bin/env python3
+import sys
+import time
+if sys.argv[1:3] == ["login", "status"]:
+    raise SystemExit(0)
+if sys.argv[1:] == ["--version"]:
+    print("codex-cli timeout-test")
+    raise SystemExit(0)
+if sys.argv[1:3] == ["exec", "--help"]:
+    print("--json --sandbox --cd --model --config")
+    raise SystemExit(0)
+time.sleep(5)
 """
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fake = root / "codex"
             fake.write_text(fake_source, encoding="utf-8")
             fake.chmod(0o755)
+            results = root / "results"
             exit_code = run.main(
                 [
                     "--task",
                     "webhook-rotation",
                     "--arm",
                     "baseline",
+                    "--timeout",
+                    "1",
                     "--codex-bin",
                     str(fake),
                     "--output-dir",
-                    str(root / "results"),
+                    str(results),
                 ]
             )
-            self.assertEqual(exit_code, 2)
+            self.assertEqual(exit_code, 0)
+            artifacts = next(results.iterdir())
+            report = json.loads(
+                (artifacts / "report.json").read_text(encoding="utf-8")
+            )
+            record = report["records"][0]
+            self.assertTrue(record["valid"])
+            self.assertEqual(record["status"], "outcome_failure")
+            self.assertTrue(record["timed_out"])
+            self.assertEqual(record["failure"]["category"], "agent_timeout")
+            self.assertEqual(record["duration_seconds"], 1.0)
+            self.assertTrue(record["failure"]["censored"])
+            self.assertEqual(record["failure"]["censor_limit_seconds"], 1.0)
+            self.assertTrue(all(value is None for value in record["usage"].values()))
 
 
 if __name__ == "__main__":

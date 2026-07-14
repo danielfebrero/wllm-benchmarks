@@ -116,7 +116,7 @@ def main() -> int:
                 sort_keys=True,
             )
         )
-        return 1
+        return 0
 
     failures = [name for name, passed in checks if not passed]
     passed = len(checks) - len(failures)
@@ -131,7 +131,7 @@ def main() -> int:
             sort_keys=True,
         )
     )
-    return 0 if not failures else 1
+    return 0
 
 
 if __name__ == "__main__":

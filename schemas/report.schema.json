@@ -3,25 +3,65 @@
   "$id": "https://github.com/danielfebrero/wllm-benchmarks/schemas/report.schema.json",
   "title": "wllm paired agent benchmark report",
   "type": "object",
-  "required": ["schema_version", "benchmark", "generated_at", "records"],
+  "required": ["schema_version", "benchmark", "generated_at", "status", "agent", "model", "reasoning", "topology", "valid_records", "invalid_records", "outcome_failures", "fixture_verifications", "records"],
   "properties": {
     "schema_version": {"type": "string"},
     "benchmark": {"const": "wllm-agent-ab"},
     "generated_at": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["valid", "invalid"]},
+    "valid_records": {"type": "integer", "minimum": 0},
+    "invalid_records": {"type": "integer", "minimum": 0},
+    "outcome_failures": {"type": "integer", "minimum": 0},
     "agent": {"enum": ["codex", "claude", "grok"]},
     "model": {"type": "string"},
-    "effort": {"type": "string"},
+    "reasoning": {"type": "string"},
     "topology": {"enum": ["single", "native-multi-agent"]},
+    "fixture_verifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run", "valid"],
+        "properties": {
+          "run": {"type": "integer", "minimum": 1},
+          "valid": {"type": "boolean"},
+          "source": {"type": ["object", "null"]},
+          "workspaces": {"type": "object"},
+          "artifact": {"type": "string"}
+        }
+      }
+    },
     "records": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["run", "arm", "duration_seconds", "grade", "usage"],
+        "required": ["run", "arm", "status", "valid", "failure", "fixture_digest", "duration_seconds", "grade", "usage"],
         "properties": {
           "run": {"type": "integer", "minimum": 1},
           "arm": {"enum": ["baseline", "wllm"]},
-          "duration_seconds": {"type": "number", "minimum": 0},
-          "grade": {"type": "object"},
+          "status": {"enum": ["valid", "outcome_failure", "invalid"]},
+          "valid": {"type": "boolean"},
+          "failure": {
+            "type": ["object", "null"],
+            "properties": {
+              "category": {"type": "string"},
+              "phase": {"type": "string"},
+              "message": {"type": "string"},
+              "diagnostics": {"type": "array", "items": {"type": "string"}},
+              "censored": {"type": "boolean"},
+              "censor_limit_seconds": {"type": ["number", "null"], "minimum": 0}
+            }
+          },
+          "fixture_digest": {"type": ["string", "null"]},
+          "duration_seconds": {"type": ["number", "null"], "minimum": 0},
+          "grade": {
+            "type": "object",
+            "required": ["passed", "total", "score"],
+            "properties": {
+              "passed": {"type": "integer", "minimum": 0},
+              "total": {"type": "integer", "minimum": 0},
+              "score": {"type": "number", "minimum": 0, "maximum": 1}
+            }
+          },
           "usage": {
             "type": "object",
             "additionalProperties": {"type": ["integer", "null"]}

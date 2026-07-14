@@ -1,0 +1,12 @@
+# Context-construction dependencies used by the pinned RepoQA adapter.
+# Provider SDKs are unnecessary because model calls go through agent CLIs.
+appdirs==1.4.4
+fire==0.6.0
+nltk==3.9.1
+numpy==1.26.4
+rich==13.7.1
+tempdir==0.7.1
+transformers==4.40.0
+tree_sitter==0.21.3
+tree_sitter_languages==1.10.2
+wget==3.2
