@@ -1,0 +1,8 @@
+{
+  "id": "release-evidence",
+  "revision": 1,
+  "title": "Repair deterministic release evidence generation",
+  "prompt": "Deployment DEP-1842 rejects the release evidence generated for REL-2026.07.14.3 with EVIDENCE_SCHEMA_MISMATCH. Diagnose the failure from authoritative workspace evidence and implement the smallest correct repair so the generator emits the canonical deterministic JSON document. Public tests are incomplete. Do not modify tests, documentation, configuration, catalog, or evidence files.",
+  "prepare": ["python3", "{task_dir}/prepare.py", "{workspace}"],
+  "grade": ["python3", "{task_dir}/grade.py", "{workspace}"]
+}

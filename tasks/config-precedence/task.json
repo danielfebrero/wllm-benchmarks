@@ -1,0 +1,8 @@
+{
+  "id": "config-precedence",
+  "revision": 1,
+  "title": "Repair effective configuration precedence",
+  "prompt": "Rollout CFG-2717 starts the Orbit gateway with stale defaults and ignores the active emergency overrides. Diagnose the effective-configuration failure from the authoritative workspace evidence and implement the smallest general repair. Public tests are incomplete. Do not modify tests, documentation, configuration, deployment, archive, or evidence files.",
+  "prepare": ["python3", "{task_dir}/prepare.py", "{workspace}"],
+  "grade": ["python3", "{task_dir}/grade.py", "{workspace}"]
+}

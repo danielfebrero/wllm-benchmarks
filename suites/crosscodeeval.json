@@ -1,0 +1,10 @@
+{
+  "id": "crosscodeeval",
+  "kind": "cross-file-completion",
+  "source": "https://github.com/amazon-science/cceval",
+  "license": "Apache-2.0",
+  "ab_adapter": "planned",
+  "comparability": "derived-agent-ab",
+  "runnable": false,
+  "doctor": {"programs": ["git"], "python_modules": []}
+}

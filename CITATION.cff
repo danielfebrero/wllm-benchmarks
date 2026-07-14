@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this harness, cite the repository revision and every upstream benchmark used."
+title: "wllm-benchmarks"
+type: software
+authors:
+  - family-names: "Febrero"
+    given-names: "Daniel"
+repository-code: "https://github.com/danielfebrero/wllm-benchmarks"
+license: Apache-2.0
+version: 0.1.0
+date-released: 2026-07-14

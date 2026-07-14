@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "tasks": ["release-evidence", "config-precedence", "migration-lineage", "webhook-rotation", "single-file-control"],
+  "agents": ["codex", "claude", "grok"],
+  "efforts": ["low", "medium", "high"],
+  "topologies": ["single", "native-multi-agent"],
+  "runs": 3,
+  "jobs": 1
+}

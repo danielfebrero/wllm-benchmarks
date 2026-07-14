@@ -1,0 +1,11 @@
+{
+  "id": "repoqa-snf",
+  "kind": "function-retrieval",
+  "source": "https://github.com/evalplus/repoqa",
+  "license": "Apache-2.0",
+  "ab_adapter": "planned",
+  "comparability": "official-runner-only-until-ab-adapter-exists",
+  "runnable": false,
+  "doctor": {"programs": [], "python_modules": ["repoqa"]},
+  "official_command": "repoqa.search_needle_function --model MODEL --backend BACKEND"
+}
