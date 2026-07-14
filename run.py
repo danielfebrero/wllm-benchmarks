@@ -2444,6 +2444,11 @@ def main(argv: list[str] | None = None) -> int:
                 fixture_category = ""
             fixture_verifications.append(verification)
             if fixture_error is not None:
+                print(
+                    f"Run {run_number}/{args.runs}: INVALID "
+                    f"({fixture_category}): {fixture_error}",
+                    file=sys.stderr,
+                )
                 for arm in arms:
                     records.append(
                         invalid_arm_record(
