@@ -632,6 +632,20 @@ class FixtureTests(unittest.TestCase):
             first_path, second_path = Path(first), Path(second)
             run.prepare_workspace(task_dir, manifest, first_path)
             run.prepare_workspace(task_dir, manifest, second_path)
+            for workspace in (first_path, second_path):
+                self.assertEqual(
+                    run.run_checked(
+                        ["git", "config", "--get", "maintenance.auto"],
+                        cwd=workspace,
+                    ).stdout.strip(),
+                    "false",
+                )
+                self.assertEqual(
+                    run.run_checked(
+                        ["git", "config", "--get", "gc.auto"], cwd=workspace
+                    ).stdout.strip(),
+                    "0",
+                )
             self.assertEqual(
                 (first_path / "src/webhook_auth.py").read_bytes(),
                 (second_path / "src/webhook_auth.py").read_bytes(),

@@ -540,6 +540,13 @@ def prepare_workspace(task_dir: Path, manifest: dict[str, Any], workspace: Path)
     command = expand_command(manifest["prepare"], task_dir, workspace)
     run_checked(command)
     run_checked(["git", "init", "--quiet"], cwd=workspace)
+    # Git 2.54 can detach automatic maintenance after a porcelain command.
+    # A detached repack races the immediate byte-for-byte fixture clone by
+    # deleting loose objects while shutil.copytree is reading them. Benchmark
+    # repositories are tiny and short-lived, so disable that mutation before
+    # the initial commit instead of sleeping or retrying a moving source tree.
+    run_checked(["git", "config", "maintenance.auto", "false"], cwd=workspace)
+    run_checked(["git", "config", "gc.auto", "0"], cwd=workspace)
     run_checked(["git", "config", "user.name", "wllm benchmark"], cwd=workspace)
     run_checked(
         ["git", "config", "user.email", "benchmark@invalid.local"], cwd=workspace
