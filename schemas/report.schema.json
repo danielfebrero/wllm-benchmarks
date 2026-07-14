@@ -1,12 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/danielfebrero/wllm-benchmarks/schemas/report.schema.json",
-  "title": "wllm paired agent benchmark report",
+  "title": "wllm three-arm agent benchmark report",
   "type": "object",
   "required": ["schema_version", "benchmark", "generated_at", "status", "agent", "model", "reasoning", "topology", "valid_records", "invalid_records", "outcome_failures", "fixture_verifications", "records"],
   "properties": {
     "schema_version": {"type": "string"},
-    "benchmark": {"const": "wllm-agent-ab"},
+    "benchmark": {"const": "wllm-agent-triad"},
+    "comparison_arms": {
+      "type": "array",
+      "items": {"enum": ["baseline", "brief-only", "wllm"]},
+      "uniqueItems": true
+    },
     "generated_at": {"type": "string", "format": "date-time"},
     "status": {"enum": ["valid", "invalid"]},
     "valid_records": {"type": "integer", "minimum": 0},
@@ -37,7 +42,7 @@
         "required": ["run", "arm", "status", "valid", "failure", "fixture_digest", "duration_seconds", "grade", "usage"],
         "properties": {
           "run": {"type": "integer", "minimum": 1},
-          "arm": {"enum": ["baseline", "wllm"]},
+          "arm": {"enum": ["baseline", "brief-only", "wllm"]},
           "status": {"enum": ["valid", "outcome_failure", "invalid"]},
           "valid": {"type": "boolean"},
           "failure": {
@@ -53,6 +58,11 @@
           },
           "fixture_digest": {"type": ["string", "null"]},
           "duration_seconds": {"type": ["number", "null"], "minimum": 0},
+          "wllm_runtime_policy": {"enum": ["allowed", "denied"]},
+          "wllm_runtime_transport": {"enum": ["cli", "none"]},
+          "wllm_runtime_calls": {"type": ["integer", "null"], "minimum": 0},
+          "wllm_runtime_denied_attempts": {"type": ["integer", "null"], "minimum": 0},
+          "wllm_runtime_log_artifact": {"type": ["string", "null"]},
           "grade": {
             "type": "object",
             "required": ["passed", "total", "score"],

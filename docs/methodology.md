@@ -2,17 +2,21 @@
 
 ## Estimand
 
-The primary estimand is the paired effect of replacing normal first-turn
-repository discovery with a single task-conditioned `wllm context` briefing
-plus an explicit instruction to use that briefing as the initial workspace map.
-It is not the effect of giving the treatment hidden hints, and it is not a
-comparison between different models.
+The primary estimand is the paired product effect of `wllm` versus `baseline`:
+a task-conditioned initial brief plus on-demand runtime CLI access, compared
+with neither capability. Two predeclared mechanism contrasts decompose it:
+`brief-only / baseline` estimates the initial-brief contribution, while
+`wllm / brief-only` estimates the incremental contribution of runtime access.
+These mechanism contrasts are exploratory; the confirmatory efficiency claim
+remains `wllm / baseline`. No arm receives hidden hints and models never differ
+within a cell.
 
-The implemented treatment is `prefetch`: the harness computes one briefing
-before the agent's first turn and appends it to the common prompt. This isolates
-the retrieval intervention. Product-level `wllm init` hook validation is a
-separate experiment because it mixes retrieval with host hook behavior; this
-harness does not label prefetch results as hook results.
+The two brief arms independently compute a cold, identically budgeted briefing
+before the first turn and append it to the common prompt. Only the full `wllm`
+arm also receives a PATH-first CLI shim that forwards to the exact pinned binary.
+Runtime use is optional agent behavior and every invocation is recorded.
+Product-level `wllm init` hook validation remains a separate experiment; this
+harness does not label the controlled CLI intervention as a hook result.
 
 ## Pairing and isolation
 
@@ -21,12 +25,21 @@ source into every requested arm before either agent starts. A canonical SHA-256
 digest covers relative paths, entry types, permission modes, symlink targets and
 file bytes across the whole tree, including `.git`; the harness records each
 digest and refuses agent execution unless all copies match. The public task and
-common efficiency instruction are identical. The baseline never receives the
-briefing or its use directive. The treatment's generated `.wllm` state is
-restored before the agent starts, then the complete workspace is re-hashed;
+common efficiency instruction are identical. The baseline never receives a
+briefing or wllm directive. `brief-only` receives the briefing but is explicitly
+denied runtime wllm. The full arm receives the briefing and targeted-use
+directive. Generated `.wllm` state is restored before the agent starts, then
+the complete workspace is re-hashed;
 agent execution is infrastructure-invalid if it no longer matches the fixture.
 
-The agent is told to stay inside its workspace. Publication runs should add an
+The harness disables user-configured integrations (`--ignore-user-config` and
+`--ignore-rules` for Codex, safe mode for Claude, and MCP-tool denial for Grok).
+It prepends a deny shim named `wllm` in control-arm PATHs, so a global install
+cannot leak into them and an attempted call becomes a recorded protocol failure.
+The full arm gets an allow shim pointing only to the copied benchmark binary.
+Thus CLI runtime capability is provider-neutral; MCP-specific product adapters
+can be studied separately. The agent is told to stay inside its workspace.
+Publication runs should add an
 OS-level boundary (container or sandbox mount) because prompt instructions are
 not an isolation mechanism. The grader, gold behavior and private tests live
 outside that mount.
@@ -56,8 +69,9 @@ not stop later arms or repetitions.
 
 Analyze paired cells within `(agent, model, effort, topology, task, machine
 regime)`. Report score delta and geometric mean ratios for input tokens and
-end-to-end time (`wllm / baseline`). A ratio below one favors wllm. Use an even
-number of repetitions so baseline-first and treatment-first order is balanced.
+end-to-end time for all three pairwise contrasts. A ratio below one favors the
+numerator arm. Use a repetition count divisible by three so each arm occupies
+every execution position equally often.
 
 A publication matrix must come from a committed config whose
 `model_snapshot_status` is `attested-immutable`. That value is an explicit
@@ -69,11 +83,12 @@ includes executable, task and harness hashes. Protocol-changing CLI overrides
 are rejected. The checked-in `configs/publication.json` remains a `template` and
 is not publication-eligible.
 
-Only pairs whose baseline and treatment records are both valid contribute to
-paired ratios or paired score deltas; complete but invalid pairs are counted and
+Only pairs whose relevant arm records are both valid contribute to pairwise
+ratios or score deltas; complete but invalid pairs are counted and
 listed separately.
 
-For a publication claim use at least six repetitions per cell. The harness
+For a publication claim use at least six repetitions per cell, divisible by
+three. The harness
 emits descriptive paired ratios; compute paired bootstrap confidence intervals
 in a separately versioned analysis retained with the result. A defensible win
 requires:

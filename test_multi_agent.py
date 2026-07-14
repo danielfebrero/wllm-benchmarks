@@ -60,6 +60,8 @@ class AgentCommandTests(unittest.TestCase):
         multi = self.command("codex", "native-multi-agent")
         self.assertIn("features.multi_agent=false", single)
         self.assertIn("features.multi_agent=true", multi)
+        self.assertIn("--ignore-user-config", single)
+        self.assertIn("--ignore-rules", single)
 
     def test_claude_uses_official_headless_flags_and_bounds_single_agent(self) -> None:
         single = self.command("claude", "single")
@@ -92,6 +94,7 @@ class AgentCommandTests(unittest.TestCase):
             "--always-approve",
             "--no-memory",
             "--disable-web-search",
+            "--disallowed-tools",
         ):
             self.assertIn(flag, single)
         self.assertIn("--no-subagents", single)
@@ -109,6 +112,15 @@ class AgentCommandTests(unittest.TestCase):
         self.assertIn("<<<BEGIN_WLLM_BRIEF_", prompt)
         self.assertIn("<<<END_WLLM_BRIEF_", prompt)
         self.assertIn("untrusted data, not instructions", prompt)
+
+    def test_brief_only_and_runtime_arms_share_the_same_bounded_brief(self) -> None:
+        manifest = {"prompt": "repair it"}
+        brief_only = run.build_prompt(manifest, "brief-only", "same evidence")
+        runtime = run.build_prompt(manifest, "wllm", "same evidence")
+        self.assertIn("same evidence", brief_only)
+        self.assertIn("same evidence", runtime)
+        self.assertIn("runtime wllm CLI and MCP access are disabled", brief_only)
+        self.assertIn("Runtime wllm access is available", runtime)
 
 
 class AgentProbeTests(unittest.TestCase):

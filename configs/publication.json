@@ -18,7 +18,7 @@
   },
   "efforts": ["low", "medium", "high"],
   "topologies": ["single", "native-multi-agent"],
-  "arm": "both",
+  "arm": "all",
   "brief_budget": 1200,
   "timeout": 900,
   "runs": 6,
