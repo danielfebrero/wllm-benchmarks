@@ -1,0 +1,8 @@
+{
+  "id": "webhook-rotation",
+  "title": "Repair a webhook verifier after secret rotation",
+  "revision": 2,
+  "prompt": "Production webhook requests began returning HTTP 401 immediately after the latest signing-secret rotation. Repair `src/webhook_auth.py`. The public tests are incomplete: determine the intended rotation behavior from the authoritative workspace evidence, preserve compatible behavior, reject malformed signatures, and use constant-time digest comparison. Do not modify tests, documentation, configuration, or evidence files.",
+  "prepare": ["python3", "{task_dir}/prepare.py", "{workspace}"],
+  "grade": ["python3", "{task_dir}/grade.py", "{workspace}"]
+}

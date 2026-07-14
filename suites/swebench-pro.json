@@ -1,0 +1,12 @@
+{
+  "id": "swebench-pro",
+  "kind": "agent-repair",
+  "source": "https://github.com/scaleapi/SWE-bench_Pro-os",
+  "dataset": "https://huggingface.co/datasets/ScaleAI/SWE-bench_Pro",
+  "license": "verify-harness-and-dataset-separately",
+  "ab_adapter": "planned",
+  "comparability": "requires-official-docker-grader",
+  "runnable": false,
+  "doctor": {"programs": ["docker", "git"], "python_modules": ["datasets"]},
+  "selection": {"method": "sha256-sorted-stratified", "salt": "wllm-bench-v1"}
+}

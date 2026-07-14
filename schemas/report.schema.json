@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/danielfebrero/wllm-benchmarks/schemas/report.schema.json",
+  "title": "wllm paired agent benchmark report",
+  "type": "object",
+  "required": ["schema_version", "benchmark", "generated_at", "records"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "benchmark": {"const": "wllm-agent-ab"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "agent": {"enum": ["codex", "claude", "grok"]},
+    "model": {"type": "string"},
+    "effort": {"type": "string"},
+    "topology": {"enum": ["single", "native-multi-agent"]},
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run", "arm", "duration_seconds", "grade", "usage"],
+        "properties": {
+          "run": {"type": "integer", "minimum": 1},
+          "arm": {"enum": ["baseline", "wllm"]},
+          "duration_seconds": {"type": "number", "minimum": 0},
+          "grade": {"type": "object"},
+          "usage": {
+            "type": "object",
+            "additionalProperties": {"type": ["integer", "null"]}
+          }
+        }
+      }
+    }
+  }
+}

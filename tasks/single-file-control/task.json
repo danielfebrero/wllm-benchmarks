@@ -1,0 +1,8 @@
+{
+  "id": "single-file-control",
+  "revision": 1,
+  "title": "Repair case-insensitive header redaction",
+  "prompt": "Repair `src/header_sanitizer.py` so `sanitize_headers` satisfies its inline contract for every supported sensitive-header spelling. Public tests are incomplete. Make the smallest correct change and do not modify tests or other files.",
+  "prepare": ["python3", "{task_dir}/prepare.py", "{workspace}"],
+  "grade": ["python3", "{task_dir}/grade.py", "{workspace}"]
+}

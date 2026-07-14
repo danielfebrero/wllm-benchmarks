@@ -1,0 +1,10 @@
+{
+  "id": "repobench-r",
+  "kind": "retrieval-diagnostic",
+  "source": "https://github.com/Leolty/repobench",
+  "license": "CC-BY-4.0",
+  "ab_adapter": "planned",
+  "comparability": "derived-retrieval-ab",
+  "runnable": false,
+  "doctor": {"programs": ["git"], "python_modules": ["datasets"]}
+}

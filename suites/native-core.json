@@ -1,0 +1,10 @@
+{
+  "id": "native-core",
+  "kind": "agent-repair",
+  "source": "original",
+  "license": "Apache-2.0",
+  "ab_adapter": "implemented",
+  "comparability": "native-external-grader",
+  "runnable": true,
+  "tasks": ["release-evidence", "config-precedence", "migration-lineage", "webhook-rotation", "single-file-control"]
+}

@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m unittest discover -s . -p 'test_*.py' -v
+      - run: python3 -m compileall -q run.py matrix.py upstream.py tasks
+      - run: |
+          for grader in tasks/*/grade.py; do
+            python3 "$grader" --self-test
+          done

@@ -1,0 +1,11 @@
+{
+  "id": "swebench-live",
+  "kind": "agent-repair",
+  "source": "https://github.com/microsoft/SWE-bench-Live",
+  "license": "MIT",
+  "ab_adapter": "planned",
+  "comparability": "requires-pinned-snapshot-and-official-grader",
+  "runnable": false,
+  "doctor": {"programs": ["docker", "git"], "python_modules": []},
+  "selection": {"method": "sha256-sorted-stratified", "salt": "wllm-bench-v1"}
+}

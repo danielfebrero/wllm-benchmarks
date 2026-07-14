@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "tasks": ["webhook-rotation", "single-file-control"],
+  "agents": ["codex"],
+  "efforts": ["medium"],
+  "topologies": ["single"],
+  "runs": 1,
+  "jobs": 1
+}

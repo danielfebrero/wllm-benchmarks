@@ -1,0 +1,12 @@
+{
+  "id": "long-code-arena",
+  "kind": "retrieval-and-summarization",
+  "source": "https://github.com/JetBrains-Research/lca-baselines",
+  "dataset": "https://huggingface.co/datasets/JetBrains-Research/lca-bug-localization",
+  "license": "Apache-2.0",
+  "ab_adapter": "planned",
+  "comparability": "requires-task-specific-official-metric",
+  "runnable": false,
+  "doctor": {"programs": ["git"], "python_modules": ["datasets"]},
+  "tracks": ["bug-localization", "module-summarization"]
+}

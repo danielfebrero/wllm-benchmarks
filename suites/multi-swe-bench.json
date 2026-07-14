@@ -1,0 +1,11 @@
+{
+  "id": "multi-swe-bench",
+  "kind": "agent-repair-multilingual",
+  "source": "https://github.com/multi-swe-bench/multi-swe-bench",
+  "license": "Apache-2.0",
+  "ab_adapter": "planned",
+  "comparability": "requires-official-grader",
+  "runnable": false,
+  "doctor": {"programs": ["docker", "git"], "python_modules": []},
+  "selection": {"method": "sha256-sorted-stratified", "salt": "wllm-bench-v1", "strata": ["language", "repository"]}
+}

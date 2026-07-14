@@ -1,0 +1,6 @@
+wllm-benchmarks
+Copyright 2026 Daniel Febrero and contributors
+
+This product includes references and optional adapters for third-party
+benchmarks. Their datasets and graders are not redistributed. See
+THIRD_PARTY.md for provenance and licenses.

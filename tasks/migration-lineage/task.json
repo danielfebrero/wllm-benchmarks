@@ -1,0 +1,8 @@
+{
+  "id": "migration-lineage",
+  "revision": 1,
+  "title": "Repair dependency-aware migration planning",
+  "prompt": "Deployment MIG-604 generated an invalid plan for target migration m040_activate_profiles: one required predecessor was omitted and an unrelated branch was included. Diagnose the planner from the current migration lineage and operational contract, then implement the smallest general repair. Public tests are incomplete. Do not modify tests, documentation, migration records, deployment state, archive, or evidence files.",
+  "prepare": ["python3", "{task_dir}/prepare.py", "{workspace}"],
+  "grade": ["python3", "{task_dir}/grade.py", "{workspace}"]
+}
