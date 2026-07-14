@@ -1,12 +1,29 @@
 {
   "schema_version": "1.0",
   "selection_salt": "wllm-bench-v1",
+  "model_snapshot_status": "template",
+  "cache_regime": "template",
+  "machine_regime": "template",
   "tasks": ["release-evidence", "config-precedence", "migration-lineage", "webhook-rotation", "single-file-control"],
   "agents": ["codex", "claude", "grok"],
+  "models": {
+    "codex": "REPLACE_WITH_IMMUTABLE_CODEX_MODEL_SNAPSHOT",
+    "claude": "REPLACE_WITH_IMMUTABLE_CLAUDE_MODEL_SNAPSHOT",
+    "grok": "REPLACE_WITH_IMMUTABLE_GROK_MODEL_SNAPSHOT"
+  },
+  "agent_bins": {
+    "codex": "/REPLACE_WITH_ABSOLUTE_PATH/codex",
+    "claude": "/REPLACE_WITH_ABSOLUTE_PATH/claude",
+    "grok": "/REPLACE_WITH_ABSOLUTE_PATH/grok"
+  },
   "efforts": ["low", "medium", "high"],
   "topologies": ["single", "native-multi-agent"],
-  "runs": 5,
+  "arm": "both",
+  "brief_budget": 1200,
+  "timeout": 900,
+  "runs": 6,
   "jobs": 1,
-  "cold": true,
-  "retain_failures": true
+  "wllm_bin": "/REPLACE_WITH_ABSOLUTE_PATH/wllm",
+  "no_build": true,
+  "keep_workspaces": false
 }

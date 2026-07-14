@@ -4,6 +4,6 @@
   "agents": ["codex", "claude", "grok"],
   "efforts": ["low", "medium", "high"],
   "topologies": ["single", "native-multi-agent"],
-  "runs": 3,
+  "runs": 2,
   "jobs": 1
 }

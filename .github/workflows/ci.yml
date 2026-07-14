@@ -17,8 +17,23 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m unittest discover -s . -p 'test_*.py' -v
-      - run: python3 -m compileall -q run.py matrix.py upstream.py tasks
+      - run: python3 -m compileall -q run.py matrix.py upstream.py repoqa_ab.py analysis.py tasks
       - run: |
           for grader in tasks/*/grade.py; do
             python3 "$grader" --self-test
           done
+
+  repoqa-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install -r constraints/repoqa.txt
+      - run: >-
+          python3 -m pip install --no-deps
+          'git+https://github.com/evalplus/repoqa.git@ae876deb1365dbf5a15b0533723c8ed123eee586'
+      - run: python3 -m unittest test_repoqa_contract.py -v
+        env:
+          REPOQA_CONTRACT: "1"
