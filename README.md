@@ -1,9 +1,11 @@
 # wllm-benchmarks
 
-Reproducible, paired evaluations of coding agents with and without one bounded
-`wllm context` briefing. The primary question is causal and narrow: can a
-task-conditioned workspace map replace enough agent discovery to reduce input
-tokens and end-to-end time without reducing correctness?
+Reproducible, paired three-arm evaluations of coding agents: `baseline` has no
+wllm access, `brief-only` receives one bounded `wllm context` briefing, and
+`wllm` receives an identically budgeted briefing plus runtime access to the
+pinned `wllm` CLI. The primary question is causal and narrow: can wllm reduce
+input tokens and end-to-end time without reducing correctness, and how much of
+that effect comes from the initial brief versus on-demand runtime retrieval?
 
 This repository keeps unfavorable controls, counts cold briefing time, and
 never treats missing telemetry as zero. Comparisons are only valid within the
@@ -22,13 +24,20 @@ placed in the agent workspace:
 | `webhook-rotation` | small, obvious target | negative control |
 | `single-file-control` | named file, local fix | negative control |
 
-Run one paired cell:
+Run one paired triad (all three arms are the default):
 
 ```bash
 python3 run.py --task release-evidence --runs 2 \
   --agent codex --model gpt-5.6-sol --reasoning medium \
   --wllm-bin /absolute/path/to/wllm
 ```
+
+Use `--runs 3` (or another multiple of three) for balanced arm order. `--arm
+all` is the default. `--arm baseline`, `--arm brief-only`, or `--arm wllm`
+runs one arm for diagnostics; legacy `--arm both` runs only the primary
+baseline-versus-full-treatment contrast. In a successful triad report,
+`wllm_runtime_policy` is denied/denied/allowed and `*.wllm-runtime.jsonl`
+provides auditable call provenance.
 
 Run the full matrix shape serially when exploring wall-time behavior. The model
 IDs below are examples, not an immutable publication declaration:
@@ -51,7 +60,7 @@ such as `sonnet` are suitable only for exploratory runs. Record the agent CLI
 version and provider-reported model identity with every result.
 
 Before committing to the full matrix, run a bounded Codex-only slice. This
-example is four cells and therefore 48 agent calls plus 24 treatment briefs:
+example is four cells and therefore 72 agent calls plus 48 briefing builds:
 
 ```bash
 python3 matrix.py \
@@ -77,7 +86,7 @@ every `models` value with an immutable provider snapshot ID, and set
 `model_snapshot_status` to `attested-immutable`. Replace every `agent_bins` and
 `wllm_bin` placeholder with an absolute path to the exact executable. Give
 `cache_regime` and `machine_regime` factual, non-template labels describing the
-enforced cache state and machine environment. Keep `arm: both`, the declared
+enforced cache state and machine environment. Keep `arm: all`, the declared
 brief budget and timeout, `jobs: 1`, and `no_build: true`; the latter prevents a
 surprise wllm rebuild. These labels are attestations, not cache or machine
 controls by themselves. The frozen plan records binary, task and harness hashes.
@@ -89,10 +98,10 @@ changes in the config, regenerate the plan, and recommit both files instead.
 
 The smoke config contains only negative controls and checks harness plumbing;
 it is not evidence of an efficiency win. The publication config expands to 90
-cells: 1,080 agent calls and 540 treatment brief constructions. At the default
-900-second agent timeout, agent-call timeout ceilings alone total 270 hours.
+cells: 1,620 agent calls and 1,080 briefing constructions. At the default
+900-second agent timeout, agent-call timeout ceilings alone total 405 hours.
 Inspect the dry-run plan, provider quotas and expected spend before removing
-`--dry-run`. Run one authenticated smoke pair for each selected agent CLI first.
+`--dry-run`. Run one authenticated smoke triad for each selected agent CLI first.
 
 An explicitly supplied CLI option replaces the corresponding config field;
 for example, `--agents codex` replaces the complete configured `agents` list.
@@ -284,11 +293,15 @@ native repair matrix, where repository tools are part of the task.
 - One fixture preparation per repetition, followed by byte-identical arm copies
   whose whole-tree SHA-256 digests (including `.git`) must match before execution.
 - Same public task, model, effort, topology, timeout and permissions.
-- The treatment gets exactly one briefing derived only from the public prompt.
+- `baseline` has neither a brief nor runtime wllm; `brief-only` has the bounded
+  brief but runtime access is denied; `wllm` has both the brief and pinned CLI.
+- User-configured MCP servers are disabled. A PATH-first deny shim detects any
+  attempted runtime wllm use in the two control arms; the treatment shim logs
+  every runtime call and forwards only to the copied, version-recorded binary.
 - Brief construction is inside end-to-end time and its text is naturally part
   of model input.
 - Hidden graders and gold patches remain outside the agent workspace.
-- Arm order alternates. Agent/protocol failures and timeouts are score-zero
+- Three-arm order rotates. Agent/protocol failures and timeouts are score-zero
   intention-to-treat outcomes with observed or censored time; later arms still
   continue. Only infrastructure-invalid pairs are excluded from estimands.
 - Missing provider telemetry is `null`, never `0`.

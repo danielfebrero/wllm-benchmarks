@@ -166,14 +166,14 @@ def config_protocol(
         )
     if metadata.get("selection_salt") is None:
         raise AnalysisError("publication config must declare `selection_salt`")
-    if values.get("arm", "both") != "both":
-        raise AnalysisError("publication config must run both arms")
+    if values.get("arm", "all") != "all":
+        raise AnalysisError("publication config must run all three arms")
     if int(values["jobs"]) != 1:
         raise AnalysisError("publication config must use jobs=1 for wall-time claims")
     runs = int(values["runs"])
-    if runs < 6 or runs % 2:
+    if runs < 6 or runs % 3:
         raise AnalysisError(
-            "publication config must use an even runs value of at least 6"
+            "publication config must use at least 6 runs, divisible by 3"
         )
     models = values["models"]
     cells = canonical_cells(
@@ -388,9 +388,11 @@ def load_plan(path: Path) -> dict[str, Any]:
         isinstance(protocol["runs_per_cell"], bool)
         or not isinstance(protocol["runs_per_cell"], int)
         or protocol["runs_per_cell"] < 6
-        or protocol["runs_per_cell"] % 2
+        or protocol["runs_per_cell"] % 3
     ):
-        raise AnalysisError("publication protocol runs must be even and at least 6")
+        raise AnalysisError(
+            "publication protocol runs must be divisible by 3 and at least 6"
+        )
     expected_decision = fixed_decision_rule(protocol, float(core["alpha"]))
     if decision != expected_decision:
         raise AnalysisError("decision family does not match the fixed cellwise rule")
@@ -459,11 +461,19 @@ def pair_records(
     if not all(isinstance(item, dict) and key_name in item for item in records):
         raise AnalysisError("records must consistently contain either `run` or `pair`")
 
+    expected_arms = (
+        ("baseline", "brief-only", "wllm")
+        if report.get("benchmark") == "wllm-agent-triad"
+        else ("baseline", "wllm")
+    )
+    declared_arms = report.get("comparison_arms")
+    if report.get("benchmark") == "wllm-agent-triad" and declared_arms != list(expected_arms):
+        raise AnalysisError("native triad report must declare all three comparison arms")
     grouped: dict[str, dict[str, dict[str, Any]]] = {}
     for record in records:
         assert isinstance(record, dict)
         arm = record.get("arm")
-        if arm not in ("baseline", "wllm"):
+        if arm not in expected_arms:
             raise AnalysisError(f"record has invalid arm {arm!r}")
         pair_id = str(record[key_name])
         arms = grouped.setdefault(pair_id, {})
@@ -477,7 +487,7 @@ def pair_records(
     invalid_ids: list[str] = []
     for pair_id in sorted(grouped, key=lambda item: (not item.isdigit(), int(item) if item.isdigit() else item)):
         arms = grouped[pair_id]
-        if set(arms) != {"baseline", "wllm"}:
+        if set(arms) != set(expected_arms):
             incomplete_ids.append(pair_id)
             continue
         if not all(infrastructure_valid(record) for record in arms.values()):
@@ -500,8 +510,7 @@ def pair_records(
             {
                 "id": pair_id,
                 "cluster_id": cluster_id,
-                "baseline": arms["baseline"],
-                "wllm": arms["wllm"],
+                **{arm: arms[arm] for arm in expected_arms},
             }
         )
     accounting = {
@@ -513,6 +522,7 @@ def pair_records(
         "infrastructure_invalid_pair_ids": invalid_ids,
         "valid_itt_pairs": len(complete),
         "valid_itt_clusters": len({pair["cluster_id"] for pair in complete}),
+        "expected_arms": list(expected_arms),
     }
     return key_name, cluster_key, complete, accounting
 
@@ -737,7 +747,7 @@ def analyze_report(report: dict[str, Any], plan: dict[str, Any]) -> dict[str, An
         }
     )
 
-    return {
+    analysis = {
         "benchmark": report.get("benchmark"),
         "pair_key": pair_key,
         "cluster_key": cluster_key,
@@ -753,12 +763,54 @@ def analyze_report(report: dict[str, Any], plan: dict[str, Any]) -> dict[str, An
             "end_to_end_time_geometric_mean_ratio_wllm_over_baseline": time_ratio,
         },
     }
+    if pairs and "brief-only" in pairs[0]:
+        exploratory: dict[str, Any] = {}
+        for name, left_arm, right_arm in (
+            ("brief_only_over_baseline", "baseline", "brief-only"),
+            ("wllm_over_brief_only", "brief-only", "wllm"),
+        ):
+            score_deltas: list[float] = []
+            input_values: list[float] = []
+            duration_values: list[float] = []
+            for pair in pairs:
+                left, right = pair[left_arm], pair[right_arm]
+                left_score = nested_number(left, ("grade", "score"))
+                right_score = nested_number(right, ("grade", "score"))
+                if left_score is not None and right_score is not None:
+                    score_deltas.append(right_score - left_score)
+                left_input = nested_number(left, ("usage", "input_tokens"))
+                right_input = nested_number(right, ("usage", "input_tokens"))
+                if left_input and right_input and left_input > 0 and right_input > 0:
+                    input_values.append(right_input / left_input)
+                left_time = nested_number(left, ("duration_seconds",))
+                right_time = nested_number(right, ("duration_seconds",))
+                if left_time and right_time and left_time > 0 and right_time > 0:
+                    duration_values.append(right_time / left_time)
+            exploratory[name] = {
+                "left_arm": left_arm,
+                "right_arm": right_arm,
+                "role": "exploratory-mechanism-decomposition",
+                "pair_count": len(pairs),
+                "mean_score_delta": (
+                    statistics.fmean(score_deltas) if score_deltas else None
+                ),
+                "geometric_mean_input_token_ratio": (
+                    statistics.geometric_mean(input_values) if input_values else None
+                ),
+                "geometric_mean_end_to_end_time_ratio": (
+                    statistics.geometric_mean(duration_values)
+                    if duration_values
+                    else None
+                ),
+            }
+        analysis["exploratory_mechanism_contrasts"] = exploratory
+    return analysis
 
 
 def native_report_cell(report: dict[str, Any]) -> dict[str, str]:
-    if report.get("benchmark") != "wllm-agent-ab":
+    if report.get("benchmark") != "wllm-agent-triad":
         raise AnalysisError(
-            "publication analysis accepts only native wllm-agent-ab reports; "
+            "publication analysis accepts only native wllm-agent-triad reports; "
             "use --exploratory for a separately planned diagnostic"
         )
     task = report.get("task")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -965,6 +966,7 @@ class RunnerIntegrationTests(unittest.TestCase):
     def test_fake_ab_run_produces_a_graded_report(self) -> None:
         fake_source = r"""#!/usr/bin/env python3
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -981,6 +983,9 @@ if sys.argv[1:3] == ["exec", "--help"]:
     raise SystemExit(0)
 
 workspace = Path(sys.argv[sys.argv.index("--cd") + 1])
+prompt = sys.argv[-1]
+if "Runtime wllm access is available" in prompt:
+    subprocess.run(["wllm", "--version"], check=True, capture_output=True, text=True)
 candidate = workspace / "src" / "webhook_auth.py"
 source = candidate.read_text(encoding="utf-8")
 source = source.replace(
@@ -1056,16 +1061,21 @@ print('{"ref":"u1","path":"src/webhook_auth.py","content":"target evidence"}')
                 )
             )
             self.assertTrue(set(schema["required"]).issubset(report))
-            self.assertEqual(len(report["records"]), 2)
+            self.assertEqual(len(report["records"]), 3)
             self.assertEqual(report["records"][0]["grade"]["score"], 1)
             self.assertEqual(report["records"][0]["usage"]["total_tokens"], 130)
             self.assertEqual(report["records"][0]["tool_calls"]["total"], 1)
             self.assertEqual(report["records"][1]["grade"]["score"], 1)
+            self.assertEqual(report["records"][1]["arm"], "brief-only")
             self.assertEqual(report["records"][1]["wllm_brief_tokens"], 42)
-            self.assertEqual(report["records"][1]["pipeline_actions"], 2)
+            self.assertEqual(report["records"][1]["wllm_runtime_calls"], 0)
+            self.assertEqual(report["records"][2]["grade"]["score"], 1)
+            self.assertEqual(report["records"][2]["wllm_brief_tokens"], 42)
+            self.assertEqual(report["records"][2]["wllm_runtime_calls"], 1)
+            self.assertEqual(report["records"][2]["pipeline_actions"], 2)
             self.assertEqual(report["codex_version"], "codex-cli 1.2.3-test")
             self.assertEqual(report["wllm_version"], "wllm 1.2.3-test")
-            self.assertEqual(report["treatment"], "precomputed_context")
+            self.assertEqual(report["treatment"], "brief_plus_runtime_cli")
             self.assertEqual(
                 report["aggregate"]["paired"][
                     "geometric_mean_input_token_ratio"
@@ -1084,7 +1094,7 @@ if sys.argv[1:] == ["--version"]:
     print("codex-cli broken-test")
     raise SystemExit(0)
 if sys.argv[1:3] == ["exec", "--help"]:
-    print("--json --sandbox --cd --model --config")
+    print("--json --sandbox --cd --model --config --ignore-user-config --ignore-rules")
     raise SystemExit(0)
 prompt = sys.argv[-1]
 if "<<<BEGIN_WLLM_BRIEF_" not in prompt:
@@ -1133,7 +1143,7 @@ print('{"ref":"u1","path":"src/webhook_auth.py","content":"evidence"}')
             report = json.loads(
                 (artifacts / "report.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(len(report["records"]), 4)
+            self.assertEqual(len(report["records"]), 6)
             baseline = [
                 record for record in report["records"] if record["arm"] == "baseline"
             ]
@@ -1168,7 +1178,7 @@ if sys.argv[1:] == ["--version"]:
     print("codex-cli timeout-test")
     raise SystemExit(0)
 if sys.argv[1:3] == ["exec", "--help"]:
-    print("--json --sandbox --cd --model --config")
+    print("--json --sandbox --cd --model --config --ignore-user-config --ignore-rules")
     raise SystemExit(0)
 time.sleep(5)
 """
@@ -1206,6 +1216,46 @@ time.sleep(5)
             self.assertTrue(record["failure"]["censored"])
             self.assertEqual(record["failure"]["censor_limit_seconds"], 1.0)
             self.assertTrue(all(value is None for value in record["usage"].values()))
+
+
+class RuntimeToolIsolationTests(unittest.TestCase):
+    def test_only_wllm_arm_can_reach_the_pinned_runtime_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            real = root / "wllm-real"
+            real.write_text(
+                "#!/bin/sh\nprintf 'pinned-runtime\\n'\n", encoding="utf-8"
+            )
+            real.chmod(0o755)
+            tools = run.prepare_runtime_tool_shims(root / "tools", real)
+
+            for arm in run.ARMS:
+                environment, log = run.runtime_tool_environment(
+                    arm=arm,
+                    tools=tools,
+                    artifacts_dir=artifacts,
+                    stem=arm,
+                )
+                result = subprocess.run(
+                    ["wllm", "--version"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                usage = run.runtime_tool_usage(log, arm)
+                if arm == "wllm":
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout.strip(), "pinned-runtime")
+                    self.assertEqual(usage["calls"], 1)
+                    self.assertEqual(usage["denied_attempts"], 0)
+                else:
+                    self.assertEqual(result.returncode, 126)
+                    self.assertEqual(usage["calls"], 0)
+                    self.assertEqual(usage["denied_attempts"], 1)
 
 
 if __name__ == "__main__":

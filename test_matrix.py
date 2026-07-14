@@ -34,7 +34,7 @@ class MatrixTests(unittest.TestCase):
             "agent_bins": {"codex": "./codex"},
             "efforts": ["medium"],
             "topologies": ["single"],
-            "arm": "both",
+            "arm": "all",
             "brief_budget": 1200,
             "timeout": 900,
             "runs": 6,
@@ -394,7 +394,7 @@ class MatrixTests(unittest.TestCase):
                 report_dir = cell_dir / "artifacts" / "run-1"
                 report_dir.mkdir(parents=True)
                 (report_dir / "report.json").write_text(
-                    json.dumps({"benchmark": "wllm-agent-ab"}), encoding="utf-8"
+                    json.dumps({"benchmark": "wllm-agent-triad"}), encoding="utf-8"
                 )
                 (report_dir / "artifact-index.json").write_text(
                     json.dumps(

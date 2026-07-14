@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a reproducible Cartesian matrix of wllm A/B benchmark cells."""
+"""Run a reproducible Cartesian matrix of wllm three-arm benchmark cells."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ DEFAULT_ARGUMENTS: dict[str, Any] = {
     "agent_bins": {},
     "runs": 1,
     "jobs": 1,
-    "arm": "both",
+    "arm": "all",
     "brief_budget": 1200,
     "timeout": 900,
     "wllm_bin": None,
@@ -222,8 +222,8 @@ def _validate_attested_config(
             "model_snapshot_status 'attested-immutable' requires explicit fields: "
             + ", ".join(missing)
         )
-    if values["arm"] != "both":
-        raise ConfigError("attested-immutable publication requires arm='both'")
+    if values["arm"] != "all":
+        raise ConfigError("attested-immutable publication requires arm='all'")
     if values["no_build"] is not True:
         raise ConfigError("attested-immutable publication requires no_build=true")
     selected = set(values["agents"])
@@ -320,7 +320,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--runs", type=int)
     parser.add_argument("--jobs", type=int)
-    parser.add_argument("--arm", choices=("both", "baseline", "wllm"))
+    parser.add_argument(
+        "--arm", choices=("all", "both", "baseline", "brief-only", "wllm")
+    )
     parser.add_argument("--brief-budget", type=int)
     parser.add_argument("--timeout", type=int)
     parser.add_argument("--wllm-bin", type=Path)
@@ -439,9 +441,10 @@ def load_matrix_config(
             values[field] = _integer(raw[field], field, minimum)
     if "arm" in raw:
         arm = _non_empty_string(raw["arm"], "arm")
-        if arm not in ("both", "baseline", "wllm"):
+        if arm not in ("all", "both", "baseline", "brief-only", "wllm"):
             raise ConfigError(
-                f"field 'arm' must be one of 'both', 'baseline' or 'wllm'"
+                "field 'arm' must be one of 'all', 'both', 'baseline', "
+                "'brief-only' or 'wllm'"
             )
         values["arm"] = arm
     for field in ("no_build", "keep_workspaces", "dry_run"):
@@ -831,7 +834,7 @@ def build_cells(args: argparse.Namespace, matrix_dir: Path) -> list[dict[str, An
             command.append("--no-build")
         if args.keep_workspaces:
             command.append("--keep-workspaces")
-        arm_count = 2 if args.arm == "both" else 1
+        arm_count = len(run.arm_names(args.arm))
         cell_timeout_seconds = (
             args.runs * arm_count * args.timeout
             + args.runs

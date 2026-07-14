@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""End-to-end coding-agent A/B benchmark for wllm.
+"""End-to-end coding-agent three-arm benchmark for wllm.
 
-Each repetition creates two byte-identical workspaces. The selected agent solves the same
-task from raw workspace access in the baseline arm and from a bounded,
-precomputed wllm briefing in the treatment arm. A grader kept outside the
-agent workspace scores both results.
+Each repetition creates byte-identical workspaces. The selected agent solves the
+same task with no wllm access, with one bounded precomputed briefing only, and
+with that briefing plus runtime access to the wllm CLI. A grader kept outside
+the agent workspace scores every result.
 """
 
 from __future__ import annotations
@@ -43,6 +43,16 @@ AGENT_DEFAULTS = {
     "grok": {"binary": "grok", "model": "grok-4.5"},
 }
 TOPOLOGIES = ("single", "native-multi-agent")
+ARMS = ("baseline", "brief-only", "wllm")
+BRIEF_ARMS = frozenset(("brief-only", "wllm"))
+RUNTIME_WLLM_ARMS = frozenset(("wllm",))
+ARM_SELECTORS = {
+    "all": ARMS,
+    "both": ("baseline", "wllm"),
+    "baseline": ("baseline",),
+    "brief-only": ("brief-only",),
+    "wllm": ("wllm",),
+}
 PREFLIGHT_TIMEOUT_SECONDS = 30
 BUILD_TIMEOUT_SECONDS = 900
 PREPARE_TIMEOUT_SECONDS = 120
@@ -69,12 +79,15 @@ class FixtureIntegrityError(RuntimeError):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare coding-agent task performance without and with wllm."
+        description=(
+            "Compare coding-agent performance without wllm, with a brief only, "
+            "and with the brief plus runtime wllm access."
+        )
     )
     parser.add_argument("--task", default="release-evidence")
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument(
-        "--arm", choices=("both", "baseline", "wllm"), default="both"
+        "--arm", choices=tuple(ARM_SELECTORS), default="all"
     )
     parser.add_argument(
         "--agent", choices=tuple(AGENT_DEFAULTS), default="codex"
@@ -131,6 +144,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     args.model = args.model or str(AGENT_DEFAULTS[args.agent]["model"])
     return args
+
+
+def arm_names(selector: str) -> tuple[str, ...]:
+    try:
+        return ARM_SELECTORS[selector]
+    except KeyError as error:
+        raise ValueError(f"unknown arm selector: {selector}") from error
+
+
+def ordered_arms(selector: str, run_number: int) -> list[str]:
+    """Rotate arm order so each arm occupies every position equally."""
+    arms = list(arm_names(selector))
+    if len(arms) < 2:
+        return arms
+    offset = (run_number - 1) % len(arms)
+    return arms[offset:] + arms[:offset]
 
 
 def load_task(task_id: str) -> tuple[Path, dict[str, Any]]:
@@ -235,7 +264,15 @@ def inspect_codex(codex: str) -> dict[str, Any]:
             "Could not inspect `codex exec --help`; update Codex CLI or pass the "
             "correct executable with --codex-bin.\n" + help_text.strip()
         )
-    required = ("--json", "--sandbox", "--cd", "--model", "--config")
+    required = (
+        "--json",
+        "--sandbox",
+        "--cd",
+        "--model",
+        "--config",
+        "--ignore-user-config",
+        "--ignore-rules",
+    )
     missing = [flag for flag in required if flag not in help_text]
     if missing:
         raise SystemExit(
@@ -314,6 +351,7 @@ def inspect_agent(agent: str, executable: str) -> dict[str, Any]:
             "--effort",
             "--always-approve",
             "--no-memory",
+            "--disallowed-tools",
         ),
     }
     missing = [flag for flag in required_by_agent[agent] if flag not in help_text]
@@ -519,6 +557,122 @@ def binary_name() -> str:
     return "wllm.exe" if os.name == "nt" else "wllm"
 
 
+RUNTIME_WRAPPER_SOURCE = r'''#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def main() -> int:
+    policy = os.environ.get("WLLM_BENCH_RUNTIME_POLICY", "deny")
+    log_value = os.environ.get("WLLM_BENCH_RUNTIME_LOG")
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "policy": policy,
+        "cwd": str(Path.cwd()),
+        "argv": sys.argv[1:],
+    }
+    if log_value:
+        with Path(log_value).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, sort_keys=True) + "\n")
+    if policy != "allow":
+        print("wllm runtime access is disabled for this benchmark arm", file=sys.stderr)
+        return 126
+    real = os.environ.get("WLLM_BENCH_REAL_BIN")
+    if not real:
+        print("wllm runtime binary is unavailable", file=sys.stderr)
+        return 127
+    return subprocess.run([real, *sys.argv[1:]], check=False).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def prepare_runtime_tool_shims(
+    tools_dir: Path, real_wllm: Path | None
+) -> dict[str, Path | None]:
+    """Create PATH-first allow/deny shims without changing fixture bytes."""
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    wrapper = tools_dir / "wllm-runtime-wrapper.py"
+    wrapper.write_text(RUNTIME_WRAPPER_SOURCE, encoding="utf-8")
+    wrapper.chmod(wrapper.stat().st_mode | 0o111)
+    result: dict[str, Path | None] = {"real": real_wllm, "wrapper": wrapper}
+    for policy in ("allow", "deny"):
+        directory = tools_dir / policy
+        directory.mkdir()
+        if os.name == "nt":
+            command = directory / "wllm.cmd"
+            command.write_text(
+                f'@echo off\r\n"{sys.executable}" "{wrapper}" %*\r\n',
+                encoding="utf-8",
+            )
+        else:
+            command = directory / "wllm"
+            command.write_text(RUNTIME_WRAPPER_SOURCE, encoding="utf-8")
+            command.chmod(command.stat().st_mode | 0o111)
+        result[policy] = directory
+    return result
+
+
+def runtime_tool_environment(
+    *,
+    arm: str,
+    tools: dict[str, Path | None],
+    artifacts_dir: Path,
+    stem: str,
+) -> tuple[dict[str, str], Path]:
+    policy = "allow" if arm in RUNTIME_WLLM_ARMS else "deny"
+    directory = tools.get(policy)
+    if not isinstance(directory, Path):
+        raise ValueError(f"missing {policy} runtime tool shim")
+    log_path = artifacts_dir / f"{stem}.wllm-runtime.jsonl"
+    log_path.write_text("", encoding="utf-8")
+    environment = os.environ.copy()
+    environment.pop("WLLM_BIN", None)
+    environment["PATH"] = str(directory) + os.pathsep + environment.get("PATH", "")
+    environment["WLLM_BENCH_RUNTIME_POLICY"] = policy
+    environment["WLLM_BENCH_RUNTIME_LOG"] = str(log_path)
+    real = tools.get("real")
+    if policy == "allow":
+        if not isinstance(real, Path):
+            raise ValueError("wllm arm has no runtime binary")
+        environment["WLLM_BENCH_REAL_BIN"] = str(real)
+    else:
+        environment.pop("WLLM_BENCH_REAL_BIN", None)
+    return environment, log_path
+
+
+def runtime_tool_usage(log_path: Path, arm: str) -> dict[str, Any]:
+    events: list[dict[str, Any]] = []
+    if log_path.is_file():
+        for number, line in enumerate(log_path.read_text(encoding="utf-8").splitlines(), 1):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"invalid runtime wllm log line {number}: {error}"
+                ) from error
+            if not isinstance(event, dict):
+                raise ValueError(f"runtime wllm log line {number} is not an object")
+            events.append(event)
+    allowed = arm in RUNTIME_WLLM_ARMS
+    return {
+        "policy": "allowed" if allowed else "denied",
+        "transport": "cli" if allowed else "none",
+        "calls": len(events) if allowed else 0,
+        "denied_attempts": 0 if allowed else len(events),
+        "events": events,
+        "artifact": log_path.name,
+    }
+
+
 def run_checked(
     command: list[str],
     cwd: Path | None = None,
@@ -674,7 +828,7 @@ def build_prompt(
         "Minimize broad workspace scans and unnecessary file reads; prefer "
         "targeted evidence."
     )
-    if arm == "wllm":
+    if arm in BRIEF_ARMS:
         assert brief is not None
         boundary = "WLLM_BRIEF_" + hashlib.sha256(
             brief.encode("utf-8")
@@ -692,6 +846,19 @@ def build_prompt(
             + brief
             + f"\n<<<END_{boundary}>>>"
         )
+        if arm == "brief-only":
+            capability += (
+                "\n\nBrief-only protocol: runtime wllm CLI and MCP access are "
+                "disabled. Rely on the bounded briefing and the agent's normal "
+                "workspace tools."
+            )
+        else:
+            capability += (
+                "\n\nRuntime wllm access is available through the `wllm` CLI. "
+                "Use targeted `wllm context`, `wllm find`, `wllm locate`, "
+                "`wllm instructions`, or `wllm deps` calls when they can replace "
+                "broader scans or repeated file reads."
+            )
     else:
         capability = ""
     if topology == "native-multi-agent":
@@ -837,10 +1004,7 @@ def codex_command(
     optional = codex_info["optional_flags"]
     if optional["--ephemeral"]:
         command.append("--ephemeral")
-    if optional["--ignore-user-config"]:
-        command.append("--ignore-user-config")
-    if optional["--ignore-rules"]:
-        command.append("--ignore-rules")
+    command.extend(("--ignore-user-config", "--ignore-rules"))
     if optional["--ask-for-approval"]:
         command.extend(("--ask-for-approval", "never"))
     command.append(prompt)
@@ -912,6 +1076,8 @@ def agent_command(
             "--always-approve",
             "--no-memory",
             "--disable-web-search",
+            "--disallowed-tools",
+            "*__*",
         ]
         if topology == "single":
             if not agent_info["optional_flags"].get("--no-subagents"):
@@ -1444,7 +1610,16 @@ def invalid_arm_record(
         "timed_out": timed_out,
         "usage": empty_usage(),
         "tool_calls": empty_tool_calls(),
-        "wllm_preparation_calls": None,
+        "wllm_preparation_calls": 1 if arm in BRIEF_ARMS else 0,
+        "wllm_runtime_policy": (
+            "allowed" if arm in RUNTIME_WLLM_ARMS else "denied"
+        ),
+        "wllm_runtime_transport": (
+            "cli" if arm in RUNTIME_WLLM_ARMS else "none"
+        ),
+        "wllm_runtime_calls": None,
+        "wllm_runtime_denied_attempts": None,
+        "wllm_runtime_log_artifact": None,
         "pipeline_actions": None,
         "grade": {
             "passed": 0,
@@ -1493,6 +1668,7 @@ def outcome_failure_record(
     wllm_brief_bytes: int | None = None,
     agent_parser: dict[str, Any] | None = None,
     changed_bytes: int | None = None,
+    wllm_runtime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Record a completed experimental outcome that failed the task/protocol.
 
@@ -1521,7 +1697,14 @@ def outcome_failure_record(
     )
     effective_usage = usage or empty_usage()
     effective_calls = tool_calls or empty_tool_calls()
-    preparation_calls = 1 if arm == "wllm" else 0
+    preparation_calls = 1 if arm in BRIEF_ARMS else 0
+    runtime = wllm_runtime or {
+        "policy": "allowed" if arm in RUNTIME_WLLM_ARMS else "denied",
+        "transport": "cli" if arm in RUNTIME_WLLM_ARMS else "none",
+        "calls": None,
+        "denied_attempts": None,
+        "artifact": None,
+    }
     pipeline_actions = (
         int(effective_calls["total"]) + preparation_calls
         if effective_calls.get("total") is not None
@@ -1564,6 +1747,11 @@ def outcome_failure_record(
         "usage": effective_usage,
         "tool_calls": effective_calls,
         "wllm_preparation_calls": preparation_calls,
+        "wllm_runtime_policy": runtime.get("policy"),
+        "wllm_runtime_transport": runtime.get("transport"),
+        "wllm_runtime_calls": runtime.get("calls"),
+        "wllm_runtime_denied_attempts": runtime.get("denied_attempts"),
+        "wllm_runtime_log_artifact": runtime.get("artifact"),
         "pipeline_actions": pipeline_actions,
         "grade": {
             "passed": 0,
@@ -1599,6 +1787,7 @@ def execute_arm(
     suite_dir: Path,
     artifacts_dir: Path,
     wllm: Path | None,
+    runtime_tools: dict[str, Path | None] | None = None,
     brief_budget: int,
     agent_info: dict[str, Any],
     fixture_digest: str,
@@ -1607,6 +1796,14 @@ def execute_arm(
     workspace = suite_dir / f"run-{run_number:02d}-{arm}"
     stem = f"run-{run_number:02d}-{arm}"
     started = time.monotonic()
+    runtime: dict[str, Any] = {
+        "policy": "allowed" if arm in RUNTIME_WLLM_ARMS else "denied",
+        "transport": "cli" if arm in RUNTIME_WLLM_ARMS else "none",
+        "calls": None,
+        "denied_attempts": None,
+        "events": [],
+        "artifact": None,
+    }
 
     def infrastructure_fail(
         category: str,
@@ -1688,6 +1885,7 @@ def execute_arm(
             wllm_brief_bytes=reported_brief_bytes,
             agent_parser=parser_metadata,
             changed_bytes=changed_bytes,
+            wllm_runtime=runtime,
         )
 
     if not workspace.is_dir():
@@ -1699,7 +1897,7 @@ def execute_arm(
     brief: str | None = None
     brief_tokens = 0
     brief_seconds = 0.0
-    if arm == "wllm":
+    if arm in BRIEF_ARMS:
         if wllm is None:
             return infrastructure_fail(
                 "wllm_unavailable",
@@ -1736,7 +1934,7 @@ def execute_arm(
     except (OSError, ValueError) as error:
         return infrastructure_fail(
             "fixture_verification",
-            "briefing" if arm == "wllm" else "fixture",
+            "briefing" if arm in BRIEF_ARMS else "fixture",
             f"could not verify the workspace immediately before agent execution: {error}",
         )
     fingerprint_artifact = artifacts_dir / f"{stem}.pre-agent.fixture.json"
@@ -1752,7 +1950,7 @@ def execute_arm(
     if not fingerprint_record["valid"]:
         return infrastructure_fail(
             "fixture_mutation",
-            "briefing" if arm == "wllm" else "fixture",
+            "briefing" if arm in BRIEF_ARMS else "fixture",
             "workspace bytes changed before agent execution",
             [
                 f"expected {fixture_digest}",
@@ -1760,6 +1958,15 @@ def execute_arm(
             ],
         )
     prompt = build_prompt(manifest, arm, brief, topology)
+    try:
+        agent_env, runtime_log = runtime_tool_environment(
+            arm=arm,
+            tools=runtime_tools or {},
+            artifacts_dir=artifacts_dir,
+            stem=stem,
+        )
+    except ValueError as error:
+        return infrastructure_fail("runtime_tool_configuration", "agent", str(error))
     try:
         command = agent_command(
             agent=agent,
@@ -1795,6 +2002,7 @@ def execute_arm(
             command,
             cwd=workspace,
             timeout=remaining_timeout,
+            env=agent_env,
         )
         stdout, stderr, exit_code = result.stdout, result.stderr, result.returncode
     except subprocess.TimeoutExpired as error:
@@ -1810,6 +2018,16 @@ def execute_arm(
         )
     agent_duration = time.monotonic() - agent_started
     duration = time.monotonic() - started
+    try:
+        runtime = runtime_tool_usage(runtime_log, arm)
+    except (OSError, UnicodeError, ValueError) as error:
+        return infrastructure_fail(
+            "runtime_tool_telemetry",
+            "agent",
+            f"could not validate runtime wllm telemetry: {error}",
+            agent_exit_code=exit_code,
+            timed_out=timed_out,
+        )
     parsed = parse_agent_output(agent, stdout)
     usage = parsed["usage"]
     calls = parsed["tool_calls"]
@@ -1873,7 +2091,25 @@ def execute_arm(
             parser_metadata=parsed["metadata"],
             changed_bytes=len(patch.encode("utf-8")),
             reported_brief_seconds=brief_seconds,
-            reported_brief_tokens=brief_tokens if arm == "wllm" else 0,
+            reported_brief_tokens=brief_tokens if arm in BRIEF_ARMS else 0,
+            reported_brief_bytes=len(brief.encode("utf-8")) if brief else 0,
+        )
+
+    if int(runtime.get("denied_attempts") or 0) > 0:
+        return outcome_fail(
+            "wllm_access_violation",
+            "agent",
+            f"run {run_number} ({arm}) attempted runtime wllm access in a denied arm",
+            [f"denied attempts: {runtime['denied_attempts']}"],
+            agent_exit_code=exit_code,
+            duration_seconds=duration,
+            agent_duration_seconds=agent_duration,
+            usage=usage,
+            tool_calls=calls,
+            parser_metadata=parsed["metadata"],
+            changed_bytes=len(patch.encode("utf-8")),
+            reported_brief_seconds=brief_seconds,
+            reported_brief_tokens=brief_tokens if arm in BRIEF_ARMS else 0,
             reported_brief_bytes=len(brief.encode("utf-8")) if brief else 0,
         )
 
@@ -1931,9 +2167,14 @@ def execute_arm(
         "timed_out": timed_out,
         "usage": usage,
         "tool_calls": calls,
-        "wllm_preparation_calls": 1 if arm == "wllm" else 0,
+        "wllm_preparation_calls": 1 if arm in BRIEF_ARMS else 0,
+        "wllm_runtime_policy": runtime["policy"],
+        "wllm_runtime_transport": runtime["transport"],
+        "wllm_runtime_calls": runtime["calls"],
+        "wllm_runtime_denied_attempts": runtime["denied_attempts"],
+        "wllm_runtime_log_artifact": runtime["artifact"],
         "pipeline_actions": (
-            int(calls["total"]) + (1 if arm == "wllm" else 0)
+            int(calls["total"]) + (1 if arm in BRIEF_ARMS else 0)
             if calls.get("total") is not None
             else None
         ),
@@ -1990,6 +2231,7 @@ def run_bounded_process_tree(
     *,
     cwd: Path,
     timeout: float,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command in its own process group and reap the full tree on timeout."""
     popen_options: dict[str, Any] = {
@@ -1997,6 +2239,7 @@ def run_bounded_process_tree(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "env": env,
     }
     if os.name == "nt":
         popen_options["creationflags"] = getattr(
@@ -2087,6 +2330,89 @@ def record_is_valid(record: dict[str, Any]) -> bool:
     return record.get("valid", True) is True
 
 
+def pairwise_contrast(
+    records: list[dict[str, Any]], left_arm: str, right_arm: str
+) -> dict[str, Any] | None:
+    by_run: dict[int, dict[str, dict[str, Any]]] = {}
+    for record in records:
+        by_run.setdefault(int(record["run"]), {})[str(record["arm"])] = record
+    complete = [
+        (run_number, arms)
+        for run_number, arms in sorted(by_run.items())
+        if left_arm in arms and right_arm in arms
+    ]
+    if not complete:
+        return None
+    valid = [
+        (run_number, pair)
+        for run_number, pair in complete
+        if record_is_valid(pair[left_arm]) and record_is_valid(pair[right_arm])
+    ]
+    duration_ratios: list[float] = []
+    duration_wins = 0
+    input_ratios: list[float] = []
+    input_wins = 0
+    score_deltas: list[float] = []
+    for _, pair in valid:
+        left_duration = pair[left_arm].get("duration_seconds")
+        right_duration = pair[right_arm].get("duration_seconds")
+        if (
+            left_duration is not None
+            and right_duration is not None
+            and float(left_duration) > 0
+            and float(right_duration) > 0
+        ):
+            duration_ratios.append(float(right_duration) / float(left_duration))
+            duration_wins += int(float(right_duration) < float(left_duration))
+        left_input = pair[left_arm]["usage"]["input_tokens"]
+        right_input = pair[right_arm]["usage"]["input_tokens"]
+        if (
+            left_input is not None
+            and right_input is not None
+            and float(left_input) > 0
+            and float(right_input) > 0
+        ):
+            input_ratios.append(float(right_input) / float(left_input))
+            input_wins += int(float(right_input) < float(left_input))
+        score_deltas.append(
+            float(pair[right_arm]["grade"]["score"])
+            - float(pair[left_arm]["grade"]["score"])
+        )
+    invalid_runs = [
+        run_number
+        for run_number, pair in complete
+        if not (
+            record_is_valid(pair[left_arm]) and record_is_valid(pair[right_arm])
+        )
+    ]
+    return {
+        "left_arm": left_arm,
+        "right_arm": right_arm,
+        "runs": len(valid),
+        "complete_pairs": len(complete),
+        "valid_pairs": len(valid),
+        "invalid_pairs": len(invalid_runs),
+        "invalid_pair_runs": invalid_runs,
+        "duration_pairs": len(duration_ratios),
+        "input_token_pairs": len(input_ratios),
+        "geometric_mean_duration_ratio": (
+            round(statistics.geometric_mean(duration_ratios), 4)
+            if duration_ratios
+            else None
+        ),
+        "geometric_mean_input_token_ratio": (
+            round(statistics.geometric_mean(input_ratios), 4)
+            if input_ratios
+            else None
+        ),
+        "median_score_delta": (
+            round(statistics.median(score_deltas), 4) if score_deltas else None
+        ),
+        "right_input_wins": input_wins,
+        "right_duration_wins": duration_wins,
+    }
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     failures: dict[str, int] = {}
     invalid_failures: dict[str, int] = {}
@@ -2109,7 +2435,7 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "failure_taxonomy": dict(sorted(failures.items())),
         "invalid_failure_taxonomy": dict(sorted(invalid_failures.items())),
     }
-    for arm in ("baseline", "wllm"):
+    for arm in ARMS:
         selected = [record for record in records if record["arm"] == arm]
         if not selected:
             continue
@@ -2127,6 +2453,10 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             "median_output_tokens": ("usage", "output_tokens"),
             "median_tool_calls": ("tool_calls", "total"),
             "median_pipeline_actions": ("pipeline_actions",),
+            "median_wllm_runtime_calls": ("wllm_runtime_calls",),
+            "median_wllm_runtime_denied_attempts": (
+                "wllm_runtime_denied_attempts",
+            ),
         }
         arm_result = {
             "runs": len(selected),
@@ -2162,8 +2492,36 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             arm_failures[category] = arm_failures.get(category, 0) + 1
         arm_result["failure_taxonomy"] = dict(sorted(arm_failures.items()))
         result[arm] = arm_result
-    if "baseline" in result and "wllm" in result:
-        baseline, treatment = result["baseline"], result["wllm"]
+    contrasts: dict[str, Any] = {}
+    contrast_specs = (
+        ("brief_only_over_baseline", "baseline", "brief-only"),
+        ("wllm_over_baseline", "baseline", "wllm"),
+        ("wllm_over_brief_only", "brief-only", "wllm"),
+    )
+    for name, left_arm, right_arm in contrast_specs:
+        contrast = pairwise_contrast(records, left_arm, right_arm)
+        if contrast is not None:
+            contrasts[name] = contrast
+    if contrasts:
+        result["contrasts"] = contrasts
+    if "wllm_over_baseline" in contrasts:
+        result["paired"] = dict(contrasts["wllm_over_baseline"])
+        result["paired"]["wllm_input_wins"] = result["paired"][
+            "right_input_wins"
+        ]
+        result["paired"]["wllm_duration_wins"] = result["paired"][
+            "right_duration_wins"
+        ]
+
+    delta_specs = (
+        ("delta_brief_only_minus_baseline", "baseline", "brief-only"),
+        ("delta_wllm_minus_baseline", "baseline", "wllm"),
+        ("delta_wllm_minus_brief_only", "brief-only", "wllm"),
+    )
+    for delta_name, left_name, right_name in delta_specs:
+        if left_name not in result or right_name not in result:
+            continue
+        baseline, treatment = result[left_name], result[right_name]
         delta: dict[str, float | None] = {}
         for key in (
             "median_score",
@@ -2179,6 +2537,7 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             "median_output_tokens",
             "median_tool_calls",
             "median_pipeline_actions",
+            "median_wllm_runtime_calls",
         ):
             left, right = baseline.get(key), treatment.get(key)
             delta[key] = (
@@ -2186,91 +2545,7 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
                 if left is not None and right is not None
                 else None
             )
-        result["delta_wllm_minus_baseline"] = delta
-        by_run: dict[int, dict[str, dict[str, Any]]] = {}
-        for record in records:
-            by_run.setdefault(int(record["run"]), {})[str(record["arm"])] = record
-        complete_pairs = [
-            (run_number, arms)
-            for run_number, arms in sorted(by_run.items())
-            if "baseline" in arms and "wllm" in arms
-        ]
-        if complete_pairs:
-            valid_pairs = [
-                (run_number, pair)
-                for run_number, pair in complete_pairs
-                if record_is_valid(pair["baseline"])
-                and record_is_valid(pair["wllm"])
-            ]
-            duration_ratios: list[float] = []
-            duration_wins = 0
-            input_ratios: list[float] = []
-            input_wins = 0
-            score_deltas: list[float] = []
-            for _, pair in valid_pairs:
-                baseline_duration = pair["baseline"].get("duration_seconds")
-                treatment_duration = pair["wllm"].get("duration_seconds")
-                if (
-                    baseline_duration is not None
-                    and treatment_duration is not None
-                    and float(baseline_duration) > 0
-                    and float(treatment_duration) > 0
-                ):
-                    duration_ratios.append(
-                        float(treatment_duration) / float(baseline_duration)
-                    )
-                    duration_wins += int(
-                        float(treatment_duration) < float(baseline_duration)
-                    )
-                baseline_input = pair["baseline"]["usage"]["input_tokens"]
-                treatment_input = pair["wllm"]["usage"]["input_tokens"]
-                if (
-                    baseline_input is not None
-                    and treatment_input is not None
-                    and float(baseline_input) > 0
-                    and float(treatment_input) > 0
-                ):
-                    input_ratios.append(
-                        float(treatment_input) / float(baseline_input)
-                    )
-                    input_wins += int(float(treatment_input) < float(baseline_input))
-                score_deltas.append(
-                    float(pair["wllm"]["grade"]["score"])
-                    - float(pair["baseline"]["grade"]["score"])
-                )
-            result["paired"] = {
-                "runs": len(valid_pairs),
-                "complete_pairs": len(complete_pairs),
-                "valid_pairs": len(valid_pairs),
-                "invalid_pairs": len(complete_pairs) - len(valid_pairs),
-                "invalid_pair_runs": [
-                    run_number
-                    for run_number, pair in complete_pairs
-                    if not (
-                        record_is_valid(pair["baseline"])
-                        and record_is_valid(pair["wllm"])
-                    )
-                ],
-                "duration_pairs": len(duration_ratios),
-                "input_token_pairs": len(input_ratios),
-                "geometric_mean_duration_ratio": (
-                    round(statistics.geometric_mean(duration_ratios), 4)
-                    if duration_ratios
-                    else None
-                ),
-                "geometric_mean_input_token_ratio": (
-                    round(statistics.geometric_mean(input_ratios), 4)
-                    if input_ratios
-                    else None
-                ),
-                "median_score_delta": (
-                    round(statistics.median(score_deltas), 4)
-                    if score_deltas
-                    else None
-                ),
-                "wllm_input_wins": input_wins,
-                "wllm_duration_wins": duration_wins,
-            }
+        result[delta_name] = delta
     return result
 
 
@@ -2283,19 +2558,21 @@ def markdown_summary(report: dict[str, Any]) -> str:
         f"- Agent: `{report['agent']}` (`{report['topology']}`)",
         f"- Model: `{report['model']}`",
         f"- Effort: `{report['reasoning']}`",
-        f"- Treatment: precomputed wllm context, exact budget {report['brief_budget']} tokens",
+        "- Arms: baseline (no wllm), brief-only (bounded brief), and wllm "
+        "(the same brief plus runtime CLI)",
+        f"- Brief budget: exact maximum {report['brief_budget']} tokens",
         f"- Generated: {report['generated_at']}",
         "",
-        "| Arm | ITT/total | Median score | Solve rate | End-to-end time | Input tokens | Uncached input | Output | Tool actions |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Arm | ITT/total | Median score | Solve rate | End-to-end time | Input tokens | Uncached input | Output | Tool actions | Runtime wllm |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for arm in ("baseline", "wllm"):
+    for arm in ARMS:
         row = report["aggregate"].get(arm)
         if not row:
             continue
         lines.append(
             "| {arm} | {runs} | {score} | {solve} | {seconds} | "
-            "{input_tokens} | {uncached} | {output} | {calls} |".format(
+            "{input_tokens} | {uncached} | {output} | {calls} | {runtime} |".format(
                 arm=arm,
                 runs=f"{row['valid_runs']}/{row['runs']}",
                 score=(
@@ -2319,14 +2596,16 @@ def markdown_summary(report: dict[str, Any]) -> str:
                 ),
                 output=format_optional(row["median_output_tokens"], ".0f"),
                 calls=format_optional(row["median_pipeline_actions"], ".1f"),
+                runtime=format_optional(row["median_wllm_runtime_calls"], ".1f"),
             )
         )
     lines.extend(
         [
             "",
-            "End-to-end treatment time includes the cold wllm briefing. The "
-            "briefing itself is included in agent input tokens when the provider "
-            "reports them. Cached, total, "
+            "End-to-end time for both brief arms includes the cold wllm briefing. "
+            "The briefing itself is included in agent input tokens when the "
+            "provider reports them. Runtime wllm calls are provenance-logged; "
+            "attempted calls in denied arms fail the run. Cached, total, "
             "reasoning and wllm preparation details remain available in "
             "`report.json`.",
             "Missing telemetry is shown as `n/a`/`null`, never "
@@ -2335,8 +2614,7 @@ def markdown_summary(report: dict[str, Any]) -> str:
             "",
         ]
     )
-    paired = report["aggregate"].get("paired")
-    if paired:
+    for paired in (report["aggregate"].get("contrasts") or {}).values():
         input_ratio = paired["geometric_mean_input_token_ratio"]
         input_text = f"`{input_ratio:.3f}`" if input_ratio is not None else "`n/a`"
         duration_ratio = paired["geometric_mean_duration_ratio"]
@@ -2345,9 +2623,11 @@ def markdown_summary(report: dict[str, Any]) -> str:
         )
         lines.extend(
             [
-                "Paired geometric-mean ratios (wllm / baseline): "
+                "Paired geometric-mean ratios "
+                f"({paired['right_arm']} / {paired['left_arm']}): "
                 f"input {input_text}, "
-                f"end-to-end time {duration_text}. A ratio below 1 favors wllm. "
+                f"end-to-end time {duration_text}. A ratio below 1 favors "
+                f"{paired['right_arm']}. "
                 f"Only {paired['valid_pairs']}/{paired['complete_pairs']} complete "
                 "pairs were analyzable; infrastructure-invalid pairs are excluded "
                 "from ratios.",
@@ -2383,10 +2663,12 @@ def retain_workspaces(suite_dir: Path, destination: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.arm == "both" and args.runs > 1 and args.runs % 2:
+    requested = arm_names(args.arm)
+    if len(requested) > 1 and args.runs > 1 and args.runs % len(requested):
         print(
-            "Warning: paired publication runs should use an even --runs value "
-            "so each arm executes first equally often.",
+            "Warning: publication runs should use a --runs value divisible by "
+            f"{len(requested)} so each arm occupies every execution position "
+            "equally often.",
             file=sys.stderr,
         )
     task_dir, manifest = load_task(args.task)
@@ -2400,23 +2682,22 @@ def main(argv: list[str] | None = None) -> int:
 
     temp_context = tempfile.TemporaryDirectory(prefix="wllm-agent-bench-")
     suite_dir = Path(temp_context.name)
+    tools_dir = suite_dir / "tools"
+    tools_dir.mkdir()
     wllm: Path | None = None
     if wllm_source is not None:
-        tools_dir = suite_dir / "tools"
-        tools_dir.mkdir()
-        wllm = tools_dir / binary_name()
+        wllm = tools_dir / ("wllm-real.exe" if os.name == "nt" else "wllm-real")
         shutil.copy2(wllm_source, wllm)
         wllm.chmod(wllm.stat().st_mode | 0o111)
     wllm_version = inspect_wllm(wllm)
+    runtime_tools = prepare_runtime_tool_shims(tools_dir, wllm)
 
-    requested_arms = [args.arm] if args.arm != "both" else ["baseline", "wllm"]
+    requested_arms = list(requested)
     records: list[dict[str, Any]] = []
     fixture_verifications: list[dict[str, Any]] = []
     try:
         for run_number in range(1, args.runs + 1):
-            arms = list(requested_arms)
-            if args.arm == "both" and run_number % 2 == 0:
-                arms.reverse()
+            arms = ordered_arms(args.arm, run_number)
             fixture_started = time.monotonic()
             try:
                 verification = prepare_repetition_workspaces(
@@ -2501,6 +2782,7 @@ def main(argv: list[str] | None = None) -> int:
                         suite_dir=suite_dir,
                         artifacts_dir=artifacts_dir,
                         wllm=wllm,
+                        runtime_tools=runtime_tools,
                         brief_budget=args.brief_budget,
                         agent_info=agent_info,
                         fixture_digest=verification["source"]["digest"],
@@ -2531,7 +2813,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"output={format_optional(record['usage']['output_tokens'], 'd')}"
                         + (
                             f" brief={record['wllm_brief_tokens']}"
-                            if arm == "wllm"
+                            if arm in BRIEF_ARMS
                             else ""
                         ),
                         file=sys.stderr,
@@ -2555,8 +2837,8 @@ def main(argv: list[str] | None = None) -> int:
             for record in records
         )
         report = {
-            "schema_version": "1.3",
-            "benchmark": "wllm-agent-ab",
+            "schema_version": "1.4",
+            "benchmark": "wllm-agent-triad",
             "status": "invalid" if invalid_records else "valid",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "agent": args.agent,
@@ -2572,7 +2854,13 @@ def main(argv: list[str] | None = None) -> int:
                 agent_info["optional_flags"] if args.agent == "codex" else None
             ),
             "wllm_version": wllm_version,
-            "treatment": "precomputed_context",
+            "treatment": "brief_plus_runtime_cli",
+            "comparison_arms": requested_arms,
+            "arm_capabilities": {
+                "baseline": {"brief": False, "runtime_wllm": False},
+                "brief-only": {"brief": True, "runtime_wllm": False},
+                "wllm": {"brief": True, "runtime_wllm": True},
+            },
             "brief_budget": args.brief_budget,
             "task": {
                 "id": manifest["id"],

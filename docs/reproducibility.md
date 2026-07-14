@@ -9,7 +9,8 @@ Record and retain:
 - `attested-immutable` model snapshot status and exact provider snapshot IDs;
 - requested model, effort and topology, plus provider-observed identities and
   realized delegation evidence where available;
-- arm order, brief budget, timeout, no-build policy, permission/sandbox profile
+- arm order, brief budget, runtime-wllm policy/calls, timeout, no-build policy,
+  permission/sandbox profile
   and environment overrides;
 - factual cache regime plus OS, CPU, memory, storage and network/machine regime;
 - upstream dataset commit or snapshot and every selected instance ID;
@@ -20,8 +21,8 @@ Record and retain:
 - fixture-verification artifacts and invalid-run failure categories/diagnostics.
 
 For wall-time comparisons use `--jobs 1`, close other heavy workloads, and keep
-both arms of each pair on the same machine. Alternate arm order to reduce drift.
-Use an even number of repetitions so the alternating order is balanced.
+all three arms of each repetition on the same machine. Rotate arm order to
+reduce drift. Use a repetition count divisible by three so the order is balanced.
 Treat warm-cache experiments as a separate regime and disclose all pre-indexing
 costs; the default headline is cold end-to-end time.
 
@@ -36,12 +37,13 @@ external metadata alongside the result.
 Before publishing:
 
 1. Run the no-model unit suite.
-2. Run one smoke pair for every selected agent adapter.
+2. Run one smoke triad for every selected agent adapter and verify runtime-wllm
+   calls are possible only in the full treatment arm.
 3. Run `upstream.py doctor` for every upstream suite in scope and every
    adapter-specific doctor (for RepoQA, `repoqa_ab.py doctor`).
 4. Freeze configs and instance IDs before inspecting outcomes. Replace every
    template model and binary path, set factual machine/cache regimes, retain
-   `arm: both`, budget, timeout, runs/jobs and `no_build: true`, then set
+   `arm: all`, budget, timeout, runs/jobs and `no_build: true`, then set
    `model_snapshot_status` to `attested-immutable`.
 5. Run `analysis.py freeze-plan`, review its three fixed primary cells and
    execution-protocol hashes, then commit the frozen config and plan together.

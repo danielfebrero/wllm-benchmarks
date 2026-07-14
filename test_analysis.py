@@ -64,7 +64,7 @@ class AnalysisTests(unittest.TestCase):
                     "agent_bins": {"codex": str(agent_binary)},
                     "efforts": ["medium"],
                     "topologies": ["single"],
-                    "arm": "both",
+                    "arm": "all",
                     "brief_budget": 1200,
                     "timeout": 900,
                     "runs": 6,
@@ -90,11 +90,13 @@ class AnalysisTests(unittest.TestCase):
             records.extend(
                 [
                     native_record(run, "baseline", score=1, duration=10, tokens=100),
+                    native_record(run, "brief-only", score=1, duration=7, tokens=70),
                     native_record(run, "wllm", score=1, duration=5, tokens=50),
                 ]
             )
         return {
-            "benchmark": "wllm-agent-ab",
+            "benchmark": "wllm-agent-triad",
+            "comparison_arms": ["baseline", "brief-only", "wllm"],
             "generated_at": "2026-07-14T01:00:00+00:00",
             "status": "valid",
             "task": {"id": task},
@@ -683,7 +685,7 @@ class AnalysisTests(unittest.TestCase):
                 for identifier in reports
                 if "task=release-evidence" in identifier
             )
-            reports[primary_id]["records"][1]["usage"]["input_tokens"] = None
+            reports[primary_id]["records"][2]["usage"]["input_tokens"] = None
             clean_root = root / "incomplete"
             clean_root.mkdir()
             config_copy = clean_root / config.name
