@@ -150,7 +150,9 @@ class MatrixTests(unittest.TestCase):
         smoke = matrix.parse_args(["--config", "configs/smoke.json"])
 
         self.assertEqual(local.runs, 2)
-        self.assertEqual(len(local.tasks), 5)
+        self.assertEqual(len(local.tasks), 7)
+        self.assertIn("quota-settlement", local.tasks)
+        self.assertIn("authz-lattice", local.tasks)
         self.assertEqual(local.agents, ["codex", "claude", "grok"])
         self.assertEqual(publication.runs, 6)
         self.assertEqual(

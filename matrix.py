@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+import matrix_report
 import run
 
 
@@ -1066,6 +1067,12 @@ def main(argv: list[str] | None = None) -> int:
         protocol=protocol,
         provenance=provenance,
     )
+    try:
+        report_path = matrix_report.write_report(matrix_dir)
+        print(f"Matrix HTML report: {report_path}", file=sys.stderr)
+    except (OSError, json.JSONDecodeError, FileNotFoundError, KeyError, TypeError, ValueError) as error:
+        # Report generation must never mask a successful matrix run.
+        print(f"matrix.py: warning: HTML report generation failed: {error}", file=sys.stderr)
     failures = [cell for cell in outcomes if cell["exit_code"] != 0]
     print(f"Matrix artifacts: {matrix_dir}", file=sys.stderr)
     if failures:

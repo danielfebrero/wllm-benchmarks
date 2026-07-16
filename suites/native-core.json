@@ -6,5 +6,13 @@
   "ab_adapter": "implemented",
   "comparability": "native-external-grader",
   "runnable": true,
-  "tasks": ["release-evidence", "config-precedence", "migration-lineage", "webhook-rotation", "single-file-control"]
+  "tasks": [
+    "release-evidence",
+    "config-precedence",
+    "migration-lineage",
+    "webhook-rotation",
+    "single-file-control",
+    "quota-settlement",
+    "authz-lattice"
+  ]
 }

@@ -22,6 +22,9 @@ class NativeTaskTests(unittest.TestCase):
             "config-precedence": 3 / 9,
             "migration-lineage": 2 / 10,
             "single-file-control": 4 / 8,
+            # Hard multi-hop tasks: broken fixtures must stay well below solve.
+            "quota-settlement": 3 / 12,
+            "authz-lattice": 2 / 12,
         }
         for task_id, expected_score in expected_initial.items():
             with self.subTest(task=task_id):
@@ -40,6 +43,28 @@ class NativeTaskTests(unittest.TestCase):
                     ["python3", str(task_dir / "grade.py"), "--self-test"]
                 )
                 self.assertTrue(json.loads(preflight.stdout)["deterministic"])
+
+    def test_hard_tasks_are_not_trivial_for_public_suite(self) -> None:
+        """Hard tasks expose only weak public tests and large archive noise."""
+        for task_id in ("quota-settlement", "authz-lattice"):
+            with self.subTest(task=task_id):
+                task_dir, manifest = run.load_task(task_id)
+                with tempfile.TemporaryDirectory() as temporary:
+                    workspace = Path(temporary)
+                    run.prepare_workspace(task_dir, manifest, workspace)
+                    public = run.run_checked(
+                        ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"],
+                        cwd=workspace,
+                    )
+                    self.assertIn("OK", public.stderr + public.stdout)
+                    grade = run.grade_workspace(task_dir, manifest, workspace)
+                    self.assertLess(
+                        float(grade["score"]),
+                        0.35,
+                        msg=f"{task_id} initial grade too easy: {grade}",
+                    )
+                    archive_files = list((workspace / "archive").rglob("*"))
+                    self.assertGreaterEqual(len([p for p in archive_files if p.is_file()]), 40)
 
 
 if __name__ == "__main__":

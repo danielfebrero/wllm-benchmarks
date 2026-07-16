@@ -21,8 +21,14 @@ placed in the agent workspace:
 | `release-evidence` | large cross-format, cross-file repair | positive retrieval case |
 | `config-precedence` | code + defaults + environment contract | cross-file case |
 | `migration-lineage` | schema + migrations + compatibility | cross-file case |
+| `quota-settlement` | multi-hop billing: tiers, free tier, promos, rounding | hard positive retrieval case |
+| `authz-lattice` | multi-hop authz: inheritance, deny/allow specificity, time grants | hard positive retrieval case |
 | `webhook-rotation` | small, obvious target | negative control |
 | `single-file-control` | named file, local fix | negative control |
+
+`quota-settlement` and `authz-lattice` are intentionally harder than the original
+core tasks: incomplete public tests, large archive decoys, and multi-condition
+private graders. On low-effort models they should not score near 100% every run.
 
 Run one paired triad (all three arms are the default):
 
@@ -119,6 +125,22 @@ control and disclosure.
 Use `--jobs > 1` only for exploratory quality/token runs. Concurrent cells
 contend for CPU, disk and network, so their wall times are not publication
 quality.
+
+After every real (non-dry-run) matrix finishes, `matrix.py` writes an HTML
+infographic and machine-readable summary next to the index:
+
+```text
+results/matrix-…/report.html          # charts + KPI cards + cell table
+results/matrix-…/matrix-report.json   # same numbers for scripts
+```
+
+Regenerate for any completed matrix directory:
+
+```bash
+python3 matrix_report.py results/matrix-YYYYMMDDT…/
+```
+
+Open `report.html` in a browser (Chart.js is loaded from a CDN).
 
 Run harness tests without model calls:
 

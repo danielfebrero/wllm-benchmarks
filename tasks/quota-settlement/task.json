@@ -1,0 +1,8 @@
+{
+  "id": "quota-settlement",
+  "revision": 1,
+  "title": "Repair multi-hop usage settlement",
+  "prompt": "Billing incident QTA-991 undercharged tenant acme-north for period 2026-07-01..2026-07-02 UTC: settlement JSON failed SETTLEMENT_CONTRACT_V3 with wrong line items, free-tier application, and rounding. Diagnose from the authoritative workspace evidence and implement the smallest general repair in the settler so it emits the canonical deterministic settlement. Public tests are incomplete. Do not modify tests, documentation, meters, catalog, policy, fixtures, archive, or evidence files.",
+  "prepare": ["python3", "{task_dir}/prepare.py", "{workspace}"],
+  "grade": ["python3", "{task_dir}/grade.py", "{workspace}"]
+}

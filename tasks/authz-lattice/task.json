@@ -1,0 +1,8 @@
+{
+  "id": "authz-lattice",
+  "revision": 1,
+  "title": "Repair multi-hop authorization lattice",
+  "prompt": "Security incident AZ-4404: authorize() allowed a revoked contractor to PATCH /v2/tenants/acme/billing and denied a support lead on a time-bound grant that should still be active. Diagnose from the authoritative workspace evidence and implement the smallest general repair so decisions match the live authorization contract. Public tests are incomplete. Do not modify tests, documentation, policy, grants, catalog, archive, or evidence files.",
+  "prepare": ["python3", "{task_dir}/prepare.py", "{workspace}"],
+  "grade": ["python3", "{task_dir}/grade.py", "{workspace}"]
+}
